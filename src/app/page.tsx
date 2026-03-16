@@ -3,7 +3,7 @@
 import { useEffect, useState, useMemo, useCallback } from 'react'
 import { supabase, Lawyer, Deal } from '@/lib/supabase'
 
-type MainTab = 'dashboard' | 'lawyers' | 'deals'
+type MainTab = 'dashboard' | 'lawyers' | 'deals' | 'enrichment'
 
 interface SectorData {
   name: string
@@ -60,6 +60,9 @@ export default function Home() {
   const [connectionFilter, setConnectionFilter] = useState('')
   const [confidenceFilter, setConfidenceFilter] = useState('')
   const [pqeFilter, setPqeFilter] = useState('')
+  const [languageFilter, setLanguageFilter] = useState('')
+  const [qualJurFilter, setQualJurFilter] = useState('')
+  const [locationFilter, setLocationFilter] = useState('')
   const [sortField, setSortField] = useState<string>('total_score')
   const [sortDir, setSortDir] = useState<number>(-1)
   const [page, setPage] = useState(1)
@@ -71,6 +74,9 @@ export default function Home() {
   const [dealConfFilter, setDealConfFilter] = useState('')
   const [dealYearFilter, setDealYearFilter] = useState('')
   const [dealFirmFilter, setDealFirmFilter] = useState('')
+  const [dealSectorFilter, setDealSectorFilter] = useState('')
+  const [dealAssetFilter, setDealAssetFilter] = useState('')
+  const [dealSpecialismFilter, setDealSpecialismFilter] = useState('')
   const [dealPage, setDealPage] = useState(1)
   const dealPerPage = 25
 
@@ -125,6 +131,52 @@ export default function Home() {
     return Array.from(set).sort()
   }, [lawyers])
 
+  const languages = useMemo(() => {
+    const set = new Set<string>()
+    lawyers.forEach(l => {
+      if (l.languages) {
+        l.languages.split(',').forEach(lang => set.add(lang.trim()))
+      }
+    })
+    return Array.from(set).sort()
+  }, [lawyers])
+
+  const qualJurisdictions = useMemo(() => {
+    const set = new Set<string>()
+    lawyers.forEach(l => {
+      if (l.qual_jurisdiction) set.add(l.qual_jurisdiction)
+    })
+    return Array.from(set).sort()
+  }, [lawyers])
+
+  const locations = useMemo(() => {
+    const set = new Set<string>()
+    lawyers.forEach(l => {
+      if (l.location) set.add(l.location)
+    })
+    return Array.from(set).sort()
+  }, [lawyers])
+
+  const dealAssets = useMemo(() => {
+    const set = new Set<string>()
+    deals.forEach(d => {
+      if (d.asset_class_keywords) {
+        d.asset_class_keywords.split(',').forEach(a => set.add(a.trim()))
+      }
+    })
+    return Array.from(set).sort()
+  }, [deals])
+
+  const dealSpecialisms = useMemo(() => {
+    const set = new Set<string>()
+    deals.forEach(d => {
+      if (d.legal_specialism_keywords) {
+        d.legal_specialism_keywords.split(',').forEach(s => set.add(s.trim()))
+      }
+    })
+    return Array.from(set).sort()
+  }, [deals])
+
   const filteredSubSectors = useMemo(() => {
     if (!sectorFilter) return []
     return Array.from(new Set(
@@ -150,6 +202,15 @@ export default function Home() {
     return Array.from(map.entries()).sort((a, b) => b[1] - a[1]).slice(0, 30).map(([n]) => n)
   }, [deals])
 
+  const dealSectors = useMemo(() => {
+    const map = new Map<string, number>()
+    deals.forEach(d => {
+      const sectorName = d.sub_sectors?.sectors?.name
+      if (sectorName) map.set(sectorName, (map.get(sectorName) || 0) + 1)
+    })
+    return Array.from(map.entries()).sort((a, b) => b[1] - a[1]).map(([name]) => name)
+  }, [deals])
+
   // Filtered lawyers
   const filteredLawyers = useMemo(() => {
     let result = lawyers
@@ -159,15 +220,21 @@ export default function Home() {
         l.name?.toLowerCase().includes(q) ||
         getFirmName(l).toLowerCase().includes(q) ||
         l.focus_areas?.toLowerCase().includes(q) ||
-        l.notable_experience?.toLowerCase().includes(q)
+        l.notable_experience?.toLowerCase().includes(q) ||
+        l.languages?.toLowerCase().includes(q) ||
+        l.qual_jurisdiction?.toLowerCase().includes(q) ||
+        l.location?.toLowerCase().includes(q)
       )
     }
     if (tierFilter) result = result.filter(l => l.tier === tierFilter)
     if (sectorFilter) result = result.filter(l => l.sub_sectors?.sectors?.name === sectorFilter)
     if (subSectorFilter) result = result.filter(l => l.sub_sectors?.name === subSectorFilter)
     if (companyTypeFilter) result = result.filter(l => l.company_type_label === companyTypeFilter)
-    if (connectionFilter) result = result.filter(l => String(l.connection_degree) === connectionFilter)
+    if (connectionFilter) result = result.filter(l => l.connection_degree === Number(connectionFilter))
     if (pqeFilter) result = result.filter(l => l.pqe_band === pqeFilter)
+    if (languageFilter) result = result.filter(l => l.languages?.includes(languageFilter))
+    if (qualJurFilter) result = result.filter(l => l.qual_jurisdiction === qualJurFilter)
+    if (locationFilter) result = result.filter(l => l.location === locationFilter)
     if (confidenceFilter) {
       if (confidenceFilter === 'high') result = result.filter(l => l.confidence >= 9)
       else if (confidenceFilter === 'mid') result = result.filter(l => l.confidence >= 5 && l.confidence <= 8)
@@ -182,7 +249,7 @@ export default function Home() {
       return String(va).localeCompare(String(vb)) * sortDir
     })
     return result
-  }, [lawyers, search, tierFilter, sectorFilter, subSectorFilter, companyTypeFilter, connectionFilter, pqeFilter, confidenceFilter, sortField, sortDir])
+  }, [lawyers, search, tierFilter, sectorFilter, subSectorFilter, companyTypeFilter, connectionFilter, pqeFilter, confidenceFilter, languageFilter, qualJurFilter, locationFilter, sortField, sortDir])
 
   const filteredDeals = useMemo(() => {
     let result = deals
@@ -200,8 +267,11 @@ export default function Home() {
     if (dealConfFilter) result = result.filter(d => d.confidence === dealConfFilter)
     if (dealYearFilter) result = result.filter(d => String(d.year) === dealYearFilter)
     if (dealFirmFilter) result = result.filter(d => d.firm_name === dealFirmFilter)
+    if (dealSectorFilter) result = result.filter(d => d.sub_sectors?.sectors?.name === dealSectorFilter)
+    if (dealAssetFilter) result = result.filter(d => d.asset_class_keywords?.includes(dealAssetFilter))
+    if (dealSpecialismFilter) result = result.filter(d => d.legal_specialism_keywords?.includes(dealSpecialismFilter))
     return result
-  }, [deals, dealSearch, dealTypeFilter, dealConfFilter, dealYearFilter, dealFirmFilter])
+  }, [deals, dealSearch, dealTypeFilter, dealConfFilter, dealYearFilter, dealFirmFilter, dealSectorFilter, dealAssetFilter, dealSpecialismFilter])
 
   const pagedLawyers = filteredLawyers.slice((page - 1) * perPage, page * perPage)
   const totalLawyerPages = Math.ceil(filteredLawyers.length / perPage)
@@ -222,17 +292,19 @@ export default function Home() {
   const clearAllFilters = useCallback(() => {
     setSearch(''); setTierFilter(''); setSectorFilter(''); setSubSectorFilter('')
     setCompanyTypeFilter(''); setConnectionFilter(''); setConfidenceFilter(''); setPqeFilter('')
+    setLanguageFilter(''); setQualJurFilter(''); setLocationFilter('')
     setPage(1)
   }, [])
 
-  const hasActiveFilters = search || tierFilter || sectorFilter || subSectorFilter || companyTypeFilter || connectionFilter || confidenceFilter || pqeFilter
+  const hasActiveFilters = search || tierFilter || sectorFilter || subSectorFilter || companyTypeFilter || connectionFilter || confidenceFilter || pqeFilter || languageFilter || qualJurFilter || locationFilter
 
   const exportCSV = useCallback(() => {
-    const headers = ['Name', 'Title', 'Company', 'Type', 'Sector', 'Sub-Sector', 'Location', 'Tier', 'Score', 'Confidence', 'Connection', 'PQE', 'LinkedIn']
+    const headers = ['Name', 'Title', 'Company', 'Type', 'Sector', 'Sub-Sector', 'Location', 'Focus Areas', 'Languages', 'Qual Jurisdiction', 'Qual Year', 'Tier', 'Score', 'Confidence', 'Connection', 'PQE', 'LinkedIn']
     const rows = filteredLawyers.map(l => [
       l.name, l.title || '', getFirmName(l), l.company_type_label || '',
       l.sub_sectors?.sectors?.name || '', l.sub_sectors?.name || '', l.location || '',
-      l.tier, l.total_score, l.confidence, l.connection_degree || '',
+      l.focus_areas || '', l.languages || '', l.qual_jurisdiction || '',
+      l.qual_year || '', l.tier, l.total_score, l.confidence, l.connection_degree || '',
       l.pqe_band || '', l.linkedin_url || ''
     ])
     const csv = [headers, ...rows].map(r => r.map(c => `"${String(c).replace(/"/g, '""')}"`).join(',')).join('\n')
@@ -250,6 +322,87 @@ export default function Home() {
     const blob = new Blob([csv], { type: 'text/csv' })
     const url = URL.createObjectURL(blob); const a = document.createElement('a'); a.href = url; a.download = `gcc_shortlist_${new Date().toISOString().slice(0, 10)}.csv`; a.click(); URL.revokeObjectURL(url)
   }, [lawyers, starred])
+
+  // Enrichment calculations
+  const fullyEnrichedCount = useMemo(() => {
+    return lawyers.filter(l =>
+      l.languages && l.languages.trim() !== '' &&
+      l.qual_jurisdiction && l.qual_jurisdiction.trim() !== '' &&
+      l.qual_year &&
+      l.focus_areas && l.focus_areas.trim() !== '' &&
+      l.notable_experience && l.notable_experience.trim() !== ''
+    ).length
+  }, [lawyers])
+
+  const needsEnrichmentCount = lawyers.length - fullyEnrichedCount
+
+  const withLinkedInCount = useMemo(() => {
+    return lawyers.filter(l => l.linkedin_url && l.linkedin_url.startsWith('http')).length
+  }, [lawyers])
+
+  const enrichmentStats = useMemo(() => {
+    const fields = ['linkedin_url', 'focus_areas', 'languages', 'qual_jurisdiction', 'qual_year', 'notable_experience', 'location', 'pqe_band', 'connection_degree']
+    const stats: { [key: string]: { filled: number; total: number; pct: number } } = {}
+    fields.forEach(field => {
+      let filled = 0
+      lawyers.forEach(l => {
+        if (field === 'linkedin_url') {
+          if (l.linkedin_url && l.linkedin_url.startsWith('http')) filled++
+        } else if (field === 'focus_areas' || field === 'languages' || field === 'notable_experience' || field === 'location') {
+          const val = (l as any)[field]
+          if (val && String(val).trim() !== '') filled++
+        } else {
+          if ((l as any)[field]) filled++
+        }
+      })
+      stats[field] = { filled, total: lawyers.length, pct: lawyers.length ? Math.round((filled / lawyers.length) * 100) : 0 }
+    })
+    return stats
+  }, [lawyers])
+
+  const enrichmentBySector = useMemo(() => {
+    const map = new Map<string, { total: number; linkedin: number; focusAreas: number; languages: number; qualJur: number; notableExp: number }>()
+    lawyers.forEach(l => {
+      const sectorName = l.sub_sectors?.sectors?.name || 'Unknown'
+      if (!map.has(sectorName)) {
+        map.set(sectorName, { total: 0, linkedin: 0, focusAreas: 0, languages: 0, qualJur: 0, notableExp: 0 })
+      }
+      const s = map.get(sectorName)!
+      s.total++
+      if (l.linkedin_url && l.linkedin_url.startsWith('http')) s.linkedin++
+      if (l.focus_areas && l.focus_areas.trim() !== '') s.focusAreas++
+      if (l.languages && l.languages.trim() !== '') s.languages++
+      if (l.qual_jurisdiction && l.qual_jurisdiction.trim() !== '') s.qualJur++
+      if (l.notable_experience && l.notable_experience.trim() !== '') s.notableExp++
+    })
+    return Array.from(map.entries()).map(([name, stats]) => ({
+      name,
+      total: stats.total,
+      linkedInPct: stats.total ? Math.round((stats.linkedin / stats.total) * 100) : 0,
+      focusAreasPct: stats.total ? Math.round((stats.focusAreas / stats.total) * 100) : 0,
+      languagesPct: stats.total ? Math.round((stats.languages / stats.total) * 100) : 0,
+      qualJurPct: stats.total ? Math.round((stats.qualJur / stats.total) * 100) : 0,
+      notableExpPct: stats.total ? Math.round((stats.notableExp / stats.total) * 100) : 0,
+    }))
+  }, [lawyers])
+
+  const leastEnrichedLawyers = useMemo(() => {
+    const withCounts = lawyers.map(l => {
+      let fieldsFilled = 0
+      const missingFields: string[] = []
+      if (l.linkedin_url && l.linkedin_url.startsWith('http')) fieldsFilled++; else missingFields.push('LinkedIn')
+      if (l.focus_areas && l.focus_areas.trim() !== '') fieldsFilled++; else missingFields.push('Focus Areas')
+      if (l.languages && l.languages.trim() !== '') fieldsFilled++; else missingFields.push('Languages')
+      if (l.qual_jurisdiction && l.qual_jurisdiction.trim() !== '') fieldsFilled++; else missingFields.push('Qual Jurisdiction')
+      if (l.qual_year) fieldsFilled++; else missingFields.push('Qual Year')
+      if (l.notable_experience && l.notable_experience.trim() !== '') fieldsFilled++; else missingFields.push('Notable Exp')
+      if (l.location && l.location.trim() !== '') fieldsFilled++; else missingFields.push('Location')
+      if (l.pqe_band) fieldsFilled++; else missingFields.push('PQE Band')
+      if (l.connection_degree) fieldsFilled++; else missingFields.push('Connection')
+      return { ...l, fieldsFilled, missingFields }
+    })
+    return withCounts.sort((a, b) => a.fieldsFilled - b.fieldsFilled).slice(0, 20)
+  }, [lawyers])
 
   const tierBadge = (tier: string) => {
     const cls = tier === 'T1' ? 'bg-[#dcfce7] text-[#16a34a]' : tier === 'T2' ? 'bg-[#dbeafe] text-[#2563eb]' : 'bg-[#fef3c7] text-[#d97706]'
@@ -299,6 +452,7 @@ export default function Home() {
             { key: 'dashboard' as MainTab, label: 'Dashboard' },
             { key: 'lawyers' as MainTab, label: 'Lawyers', count: lawyers.length },
             { key: 'deals' as MainTab, label: 'Deals', count: deals.length },
+            { key: 'enrichment' as MainTab, label: 'Enrichment' },
           ]).map(t => (
             <button key={t.key} onClick={() => setTab(t.key)}
               className={`px-6 py-3 text-sm font-medium border-b-[3px] -mb-[2px] transition-all capitalize ${tab === t.key ? 'text-[#1a3a5c] border-[#1a3a5c] font-semibold' : 'text-[#3d5a78] border-transparent hover:text-[#1a3a5c]'}`}>
@@ -421,7 +575,7 @@ export default function Home() {
             <div className="flex gap-3 mb-3 flex-wrap items-center">
               <div className="relative flex-1 min-w-[200px] max-w-[360px]">
                 <input type="text" value={search} onChange={e => { setSearch(e.target.value); setPage(1) }}
-                  placeholder="Search name, company, focus areas..."
+                  placeholder="Search name, company, focus, languages, jurisdiction..."
                   className="w-full px-3 py-2.5 pl-9 bg-[#faf7f2] border border-[#d5cfc4] rounded-lg text-sm outline-none focus:border-[#1a3a5c]" />
                 <svg className="absolute left-3 top-1/2 -translate-y-1/2 text-[#3d5a78]" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><circle cx="11" cy="11" r="8" /><path d="M21 21l-4.35-4.35" /></svg>
               </div>
@@ -440,6 +594,21 @@ export default function Home() {
                 className="px-3 py-2 bg-[#faf7f2] border border-[#d5cfc4] rounded-lg text-sm">
                 <option value="">All Company Types</option>
                 {companyTypes.map(t => <option key={t} value={t}>{t}</option>)}
+              </select>
+              <select value={locationFilter} onChange={e => { setLocationFilter(e.target.value); setPage(1) }}
+                className="px-3 py-2 bg-[#faf7f2] border border-[#d5cfc4] rounded-lg text-sm">
+                <option value="">All Locations</option>
+                {locations.map(loc => <option key={loc} value={loc}>{loc}</option>)}
+              </select>
+              <select value={qualJurFilter} onChange={e => { setQualJurFilter(e.target.value); setPage(1) }}
+                className="px-3 py-2 bg-[#faf7f2] border border-[#d5cfc4] rounded-lg text-sm">
+                <option value="">All Jurisdictions</option>
+                {qualJurisdictions.map(jur => <option key={jur} value={jur}>{jur}</option>)}
+              </select>
+              <select value={languageFilter} onChange={e => { setLanguageFilter(e.target.value); setPage(1) }}
+                className="px-3 py-2 bg-[#faf7f2] border border-[#d5cfc4] rounded-lg text-sm">
+                <option value="">All Languages</option>
+                {languages.map(lang => <option key={lang} value={lang}>{lang}</option>)}
               </select>
               <select value={connectionFilter} onChange={e => { setConnectionFilter(e.target.value); setPage(1) }}
                 className="px-3 py-2 bg-[#faf7f2] border border-[#d5cfc4] rounded-lg text-sm">
@@ -466,6 +635,9 @@ export default function Home() {
                 {tierFilter && <span className="inline-flex items-center gap-1 px-2.5 py-1 bg-[#ede8df] border border-[#d5cfc4] rounded-2xl text-xs text-[#3d5a78]">{tierFilter} <button onClick={() => setTierFilter('')} className="font-bold ml-1">&times;</button></span>}
                 {subSectorFilter && <span className="inline-flex items-center gap-1 px-2.5 py-1 bg-[#ede8df] border border-[#d5cfc4] rounded-2xl text-xs text-[#3d5a78]">{subSectorFilter} <button onClick={() => setSubSectorFilter('')} className="font-bold ml-1">&times;</button></span>}
                 {companyTypeFilter && <span className="inline-flex items-center gap-1 px-2.5 py-1 bg-[#ede8df] border border-[#d5cfc4] rounded-2xl text-xs text-[#3d5a78]">{companyTypeFilter} <button onClick={() => setCompanyTypeFilter('')} className="font-bold ml-1">&times;</button></span>}
+                {locationFilter && <span className="inline-flex items-center gap-1 px-2.5 py-1 bg-[#ede8df] border border-[#d5cfc4] rounded-2xl text-xs text-[#3d5a78]">{locationFilter} <button onClick={() => setLocationFilter('')} className="font-bold ml-1">&times;</button></span>}
+                {qualJurFilter && <span className="inline-flex items-center gap-1 px-2.5 py-1 bg-[#ede8df] border border-[#d5cfc4] rounded-2xl text-xs text-[#3d5a78]">{qualJurFilter} <button onClick={() => setQualJurFilter('')} className="font-bold ml-1">&times;</button></span>}
+                {languageFilter && <span className="inline-flex items-center gap-1 px-2.5 py-1 bg-[#ede8df] border border-[#d5cfc4] rounded-2xl text-xs text-[#3d5a78]">{languageFilter} <button onClick={() => setLanguageFilter('')} className="font-bold ml-1">&times;</button></span>}
                 {connectionFilter && <span className="inline-flex items-center gap-1 px-2.5 py-1 bg-[#ede8df] border border-[#d5cfc4] rounded-2xl text-xs text-[#3d5a78]">{connectionFilter}° <button onClick={() => setConnectionFilter('')} className="font-bold ml-1">&times;</button></span>}
                 {pqeFilter && <span className="inline-flex items-center gap-1 px-2.5 py-1 bg-[#ede8df] border border-[#d5cfc4] rounded-2xl text-xs text-[#3d5a78]">PQE: {pqeFilter} <button onClick={() => setPqeFilter('')} className="font-bold ml-1">&times;</button></span>}
                 {confidenceFilter && <span className="inline-flex items-center gap-1 px-2.5 py-1 bg-[#ede8df] border border-[#d5cfc4] rounded-2xl text-xs text-[#3d5a78]">{confidenceFilter} conf <button onClick={() => setConfidenceFilter('')} className="font-bold ml-1">&times;</button></span>}
@@ -479,12 +651,16 @@ export default function Home() {
               <table className="w-full text-sm">
                 <thead><tr className="border-b-2 border-[#d5cfc4]">
                   <th className="py-3 px-2 w-[30px]"></th>
+                  <th className="py-3 px-3 w-[30px]"></th>
                   {[
                     { key: 'tier', label: 'Tier' },
                     { key: 'total_score', label: 'Score' },
                     { key: 'name', label: 'Name' },
                     { key: 'firms.name', label: 'Company' },
                     { key: 'sub_sectors.sectors.name', label: 'Sector' },
+                    { key: 'location', label: 'Location' },
+                    { key: 'focus_areas', label: 'Focus Areas' },
+                    { key: 'qual_jurisdiction', label: 'Qual Jurisdiction' },
                     { key: 'connection_degree', label: 'Conn' },
                     { key: 'confidence', label: 'Conf' },
                     { key: 'pqe_band', label: 'PQE' },
@@ -500,6 +676,17 @@ export default function Home() {
                     <tr key={l.id} className="border-b border-[#d5cfc4] hover:bg-[#ede8df] cursor-pointer transition-colors" onClick={() => setSelectedLawyer(l)}>
                       <td className="py-2.5 px-2 text-center">
                         <button onClick={(e) => toggleStar(l.id, e)} className={`text-base transition-colors ${starred.has(l.id) ? 'text-[#eab308]' : 'text-[#d5cfc4] hover:text-[#eab308]'}`}>★</button>
+                      </td>
+                      <td className="py-2.5 px-3 text-center">
+                        {l.linkedin_url && l.linkedin_url.startsWith('http') ? (
+                          <a href={l.linkedin_url} target="_blank" rel="noopener noreferrer" onClick={(e) => e.stopPropagation()}>
+                            <svg width="16" height="16" viewBox="0 0 24 24" fill="#0a66c2">
+                              <path d="M20.447 20.452h-3.554v-5.569c0-1.328-.027-3.037-1.852-3.037-1.853 0-2.136 1.445-2.136 2.939v5.667H9.351V9h3.414v1.561h.046c.477-.9 1.637-1.85 3.37-1.85 3.601 0 4.267 2.37 4.267 5.455v6.286zM5.337 7.433a2.062 2.062 0 01-2.063-2.065 2.064 2.064 0 112.063 2.065zm1.782 13.019H3.555V9h3.564v11.452zM22.225 0H1.771C.792 0 0 .774 0 1.729v20.542C0 23.227.792 24 1.771 24h20.451C23.2 24 24 23.227 24 22.271V1.729C24 .774 23.2 0 22.222 0h.003z" />
+                            </svg>
+                          </a>
+                        ) : (
+                          <span className="text-xs text-[#d5cfc4]">—</span>
+                        )}
                       </td>
                       <td className="py-2.5 px-3">{tierBadge(l.tier)}</td>
                       <td className={`py-2.5 px-3 font-bold text-sm ${scoreColor(l.total_score)}`}>
@@ -518,6 +705,26 @@ export default function Home() {
                         <div className="text-xs text-[#3d5a78]">{l.sub_sectors?.sectors?.name || '—'}</div>
                         {l.sub_sectors?.name && l.sub_sectors.name !== l.sub_sectors?.sectors?.name && (
                           <div className="text-[11px] text-[#9a9081]">{l.sub_sectors.name}</div>
+                        )}
+                      </td>
+                      <td className="py-2.5 px-3 text-xs text-[#3d5a78]">{l.location || '—'}</td>
+                      <td className="py-2.5 px-3 text-xs">
+                        {l.focus_areas ? (
+                          <div className="flex flex-wrap gap-1">
+                            {l.focus_areas.split(',').slice(0, 2).map((area, i) => (
+                              <span key={i} className="inline-block px-1.5 py-0.5 bg-[#ede8df] rounded text-[#3d5a78] truncate max-w-[100px]" title={area.trim()}>{area.trim()}</span>
+                            ))}
+                            {l.focus_areas.split(',').length > 2 && <span className="text-[#9a9081]">+{l.focus_areas.split(',').length - 2}</span>}
+                          </div>
+                        ) : (
+                          <span className="text-[#d5cfc4]">—</span>
+                        )}
+                      </td>
+                      <td className="py-2.5 px-3 text-xs text-[#3d5a78]">
+                        {l.qual_jurisdiction ? (
+                          <span>{l.qual_jurisdiction}{l.qual_year ? ` (${l.qual_year})` : ''}</span>
+                        ) : (
+                          <span className="text-[#d5cfc4]">—</span>
                         )}
                       </td>
                       <td className="py-2.5 px-3">
@@ -552,17 +759,34 @@ export default function Home() {
         {/* ===== DEALS ===== */}
         {tab === 'deals' && (
           <div>
+            {/* Deal sector tabs */}
+            <div className="flex border-b-2 border-[#d5cfc4] mb-4 overflow-x-auto">
+              <button onClick={() => { setDealSectorFilter(''); setDealPage(1) }}
+                className={`px-5 py-2.5 text-[13px] font-medium border-b-2 -mb-[2px] whitespace-nowrap ${!dealSectorFilter ? 'text-[#1a3a5c] border-[#1a3a5c] font-semibold' : 'text-[#3d5a78] border-transparent hover:text-[#1a3a5c]'}`}>
+                All <span className="text-[11px] bg-[#ede8df] px-1.5 py-0.5 rounded-lg ml-1">{deals.length}</span>
+              </button>
+              {dealSectors.map(s => {
+                const count = deals.filter(d => d.sub_sectors?.sectors?.name === s).length
+                return (
+                  <button key={s} onClick={() => { setDealSectorFilter(s); setDealPage(1) }}
+                    className={`px-5 py-2.5 text-[13px] font-medium border-b-2 -mb-[2px] whitespace-nowrap ${dealSectorFilter === s ? 'text-[#1a3a5c] border-[#1a3a5c] font-semibold' : 'text-[#3d5a78] border-transparent hover:text-[#1a3a5c]'}`}>
+                    {s} <span className="text-[11px] bg-[#ede8df] px-1.5 py-0.5 rounded-lg ml-1">{count}</span>
+                  </button>
+                )
+              })}
+            </div>
+
             {/* Deal KPIs */}
             <div className="flex gap-4 mb-5 flex-wrap">
               {[
                 { label: 'Total Deals', value: deals.length },
-                { label: 'High Confidence', value: deals.filter(d => d.confidence === 'High').length },
+                { label: 'High Confidence', value: deals.filter(d => d.confidence === 'High').length, color: 'text-[#16a34a]' },
+                { label: 'Medium Confidence', value: deals.filter(d => d.confidence === 'Medium').length, color: 'text-[#2563eb]' },
+                { label: 'Linked to MAPPING', value: deals.filter(d => d.firm_id).length, color: 'text-[#16a34a]' },
                 { label: 'With Value', value: deals.filter(d => d.deal_value).length },
-                { label: 'Unique Firms', value: new Set(deals.map(d => d.firm_name).filter(Boolean)).size },
-                { label: 'Year Range', value: deals.length ? `${Math.min(...deals.filter(d => d.year).map(d => d.year!))}–${Math.max(...deals.filter(d => d.year).map(d => d.year!))}` : '—' },
               ].map(kpi => (
                 <div key={kpi.label} className="flex-1 min-w-[120px] bg-[#faf7f2] border border-[#d5cfc4] rounded-xl p-4 text-center">
-                  <div className="text-xl font-bold text-[#1a3a5c]">{kpi.value}</div>
+                  <div className={`text-xl font-bold ${kpi.color ? kpi.color : 'text-[#1a3a5c]'}`}>{kpi.value}</div>
                   <div className="text-[11px] text-[#3d5a78] mt-1">{kpi.label}</div>
                 </div>
               ))}
@@ -586,6 +810,16 @@ export default function Home() {
                 <option value="">All Types</option>
                 {dealTypes.map(t => <option key={t} value={t}>{t}</option>)}
               </select>
+              <select value={dealAssetFilter} onChange={e => { setDealAssetFilter(e.target.value); setDealPage(1) }}
+                className="px-3 py-2 bg-[#faf7f2] border border-[#d5cfc4] rounded-lg text-sm">
+                <option value="">All Assets</option>
+                {dealAssets.map(a => <option key={a} value={a}>{a}</option>)}
+              </select>
+              <select value={dealSpecialismFilter} onChange={e => { setDealSpecialismFilter(e.target.value); setDealPage(1) }}
+                className="px-3 py-2 bg-[#faf7f2] border border-[#d5cfc4] rounded-lg text-sm">
+                <option value="">All Specialisms</option>
+                {dealSpecialisms.map(s => <option key={s} value={s}>{s}</option>)}
+              </select>
               <select value={dealYearFilter} onChange={e => { setDealYearFilter(e.target.value); setDealPage(1) }}
                 className="px-3 py-2 bg-[#faf7f2] border border-[#d5cfc4] rounded-lg text-sm">
                 <option value="">All Years</option>
@@ -595,69 +829,185 @@ export default function Home() {
                 className="px-3 py-2 bg-[#faf7f2] border border-[#d5cfc4] rounded-lg text-sm">
                 <option value="">All Confidence</option><option value="High">High</option><option value="Medium">Medium</option>
               </select>
-              {(dealSearch || dealTypeFilter || dealConfFilter || dealYearFilter || dealFirmFilter) && (
-                <button onClick={() => { setDealSearch(''); setDealTypeFilter(''); setDealConfFilter(''); setDealYearFilter(''); setDealFirmFilter(''); setDealPage(1) }}
+              {(dealSearch || dealTypeFilter || dealConfFilter || dealYearFilter || dealFirmFilter || dealSectorFilter || dealAssetFilter || dealSpecialismFilter) && (
+                <button onClick={() => { setDealSearch(''); setDealTypeFilter(''); setDealConfFilter(''); setDealYearFilter(''); setDealFirmFilter(''); setDealSectorFilter(''); setDealAssetFilter(''); setDealSpecialismFilter(''); setDealPage(1) }}
                   className="px-3 py-2 bg-[#faf7f2] border border-[#d5cfc4] rounded-lg text-xs hover:border-[#1a3a5c]">Clear All</button>
               )}
             </div>
 
             <div className="text-xs text-[#3d5a78] mb-3">{filteredDeals.length} deals</div>
 
-            {/* Deal cards */}
-            <div className="space-y-3">
-              {pagedDeals.map(d => (
-                <div key={d.id} className="bg-[#faf7f2] border border-[#d5cfc4] rounded-xl p-5 hover:border-[#1a3a5c] transition-colors">
-                  <div className="flex justify-between items-start gap-4 mb-3">
-                    <div className="flex-1">
-                      <p className="font-semibold text-sm leading-snug mb-1">{d.description}</p>
-                      <div className="flex items-center gap-3 text-xs text-[#3d5a78]">
-                        {d.firm_name && <span className="font-medium text-[#1a3a5c]">{d.firm_name}</span>}
-                        {d.client_name && <><span className="text-[#d5cfc4]">→</span> <span>{d.client_name}</span></>}
-                      </div>
-                    </div>
-                    <div className="flex items-center gap-3 shrink-0">
-                      {d.deal_value && <span className="text-sm font-bold text-[#16a34a]">{d.deal_value}</span>}
-                      <span className={`text-xs font-semibold px-2.5 py-1 rounded-lg ${d.confidence === 'High' ? 'bg-[#dcfce7] text-[#16a34a]' : 'bg-[#dbeafe] text-[#2563eb]'}`}>
-                        {d.confidence}
-                      </span>
-                    </div>
-                  </div>
-                  <div className="flex flex-wrap gap-2 items-center">
-                    {d.year && <span className="text-xs text-[#3d5a78] bg-[#ede8df] px-2 py-0.5 rounded-lg font-medium">{d.year}</span>}
-                    {d.deal_type?.split(',').slice(0, 3).map(t => (
-                      <span key={t} className="text-[11px] px-2 py-0.5 rounded-lg bg-[#ede8df] text-[#3d5a78]">{t.trim()}</span>
-                    ))}
-                    {d.asset_class_keywords?.split(',').slice(0, 2).map(a => (
-                      <span key={a} className="text-[11px] px-2 py-0.5 rounded-lg bg-[#e8edf5] text-[#2563eb]">{a.trim()}</span>
-                    ))}
-                    {d.legal_specialism_keywords?.split(',').slice(0, 2).map(s => (
-                      <span key={s} className="text-[11px] px-2 py-0.5 rounded-lg bg-[#fef3c7] text-[#d97706]">{s.trim()}</span>
-                    ))}
-                    {d.sub_sectors?.sectors?.name && (
-                      <span className="text-[11px] px-2 py-0.5 rounded-lg bg-[#f3f0eb] text-[#7c6f5b]">{d.sub_sectors.sectors.name}</span>
-                    )}
-                    {d.location_keywords && (
-                      <span className="text-[11px] text-[#9a9081] ml-auto">{d.location_keywords}</span>
-                    )}
-                  </div>
+            {/* Deal table */}
+            <div className="bg-[#faf7f2] border border-[#d5cfc4] rounded-xl overflow-hidden">
+              <table className="w-full text-sm">
+                <thead><tr className="border-b-2 border-[#d5cfc4]">
+                  {['Description', 'Firm', 'Client', 'Type', 'Asset', 'Value', 'Year', 'Specialism', 'Conf'].map(h => (
+                    <th key={h} className="text-left py-3 px-3 text-xs font-semibold uppercase tracking-wider text-[#3d5a78]">{h}</th>
+                  ))}
+                </tr></thead>
+                <tbody>
+                  {pagedDeals.map(d => (
+                    <tr key={d.id} className="border-b border-[#d5cfc4] hover:bg-[#ede8df] cursor-pointer transition-colors">
+                      <td className="py-2.5 px-3 max-w-[200px] truncate text-[#3d5a78]">{d.description || '—'}</td>
+                      <td className="py-2.5 px-3 text-[#1a3a5c] font-medium">{d.firm_name || '—'}</td>
+                      <td className="py-2.5 px-3 text-[#3d5a78]">{d.client_name || '—'}</td>
+                      <td className="py-2.5 px-3">
+                        {d.deal_type ? (
+                          <span className="inline-block px-2 py-0.5 bg-[#ede8df] rounded text-[11px] text-[#3d5a78]">{d.deal_type.split(',')[0].trim()}</span>
+                        ) : (
+                          <span className="text-[#d5cfc4]">—</span>
+                        )}
+                      </td>
+                      <td className="py-2.5 px-3">
+                        {d.asset_class_keywords ? (
+                          <div className="flex flex-wrap gap-1">
+                            {d.asset_class_keywords.split(',').slice(0, 2).map((a, i) => (
+                              <span key={i} className="inline-block px-1.5 py-0.5 bg-[#e8edf5] rounded text-[11px] text-[#2563eb]">{a.trim()}</span>
+                            ))}
+                          </div>
+                        ) : (
+                          <span className="text-[#d5cfc4]">—</span>
+                        )}
+                      </td>
+                      <td className="py-2.5 px-3 font-bold text-[#16a34a]">{d.deal_value || '—'}</td>
+                      <td className="py-2.5 px-3 text-[#3d5a78]">{d.year || '—'}</td>
+                      <td className="py-2.5 px-3">
+                        {d.legal_specialism_keywords ? (
+                          <div className="flex flex-wrap gap-1">
+                            {d.legal_specialism_keywords.split(',').slice(0, 2).map((s, i) => (
+                              <span key={i} className="inline-block px-1.5 py-0.5 bg-[#fef3c7] rounded text-[11px] text-[#d97706]">{s.trim()}</span>
+                            ))}
+                          </div>
+                        ) : (
+                          <span className="text-[#d5cfc4]">—</span>
+                        )}
+                      </td>
+                      <td className={`py-2.5 px-3 text-xs font-semibold ${d.confidence === 'High' ? 'text-[#16a34a]' : d.confidence === 'Medium' ? 'text-[#2563eb]' : 'text-[#3d5a78]'}`}>
+                        {d.confidence || '—'}
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+
+              <div className="flex justify-between items-center px-5 py-3 border-t border-[#d5cfc4] bg-[#faf7f2]">
+                <span className="text-xs text-[#3d5a78]">Showing {((dealPage - 1) * dealPerPage) + 1}–{Math.min(dealPage * dealPerPage, filteredDeals.length)} of {filteredDeals.length}</span>
+                <div className="flex gap-1">
+                  <button disabled={dealPage === 1} onClick={() => setDealPage(p => p - 1)} className="px-3 py-1.5 border border-[#d5cfc4] rounded text-xs disabled:opacity-40">&laquo;</button>
+                  {Array.from({ length: Math.min(totalDealPages, 7) }, (_, i) => {
+                    const p = dealPage <= 4 ? i + 1 : Math.min(dealPage - 3 + i, totalDealPages)
+                    return <button key={p} onClick={() => setDealPage(p)} className={`px-3 py-1.5 border rounded text-xs ${p === dealPage ? 'bg-[#1a3a5c] text-white border-[#1a3a5c]' : 'border-[#d5cfc4] hover:border-[#1a3a5c]'}`}>{p}</button>
+                  })}
+                  <button disabled={dealPage === totalDealPages} onClick={() => setDealPage(p => p + 1)} className="px-3 py-1.5 border border-[#d5cfc4] rounded text-xs disabled:opacity-40">&raquo;</button>
+                </div>
+              </div>
+            </div>
+          </div>
+        )}
+
+        {/* ===== ENRICHMENT ===== */}
+        {tab === 'enrichment' && (
+          <div>
+            {/* Top stats */}
+            <div className="flex gap-4 mb-6 flex-wrap">
+              {[
+                { label: 'Total Lawyers', value: lawyers.length },
+                { label: 'Fully Enriched', value: fullyEnrichedCount },
+                { label: 'Needs Enrichment', value: needsEnrichmentCount },
+                { label: 'With LinkedIn', value: withLinkedInCount },
+                { label: 'Avg Fields Filled', value: `${(Object.values(enrichmentStats).reduce((sum, s) => sum + s.pct, 0) / 9).toFixed(0)}%` },
+              ].map(kpi => (
+                <div key={kpi.label} className="flex-1 min-w-[120px] bg-[#faf7f2] border border-[#d5cfc4] rounded-xl p-4 text-center">
+                  <div className="text-xl font-bold text-[#1a3a5c]">{kpi.value}</div>
+                  <div className="text-[11px] text-[#3d5a78] mt-1">{kpi.label}</div>
                 </div>
               ))}
             </div>
 
-            {/* Pagination */}
-            {totalDealPages > 1 && (
-              <div className="flex justify-between items-center px-2 py-4 mt-3">
-                <span className="text-xs text-[#3d5a78]">Showing {((dealPage - 1) * dealPerPage) + 1}–{Math.min(dealPage * dealPerPage, filteredDeals.length)} of {filteredDeals.length}</span>
-                <div className="flex gap-1">
-                  <button disabled={dealPage === 1} onClick={() => setDealPage(p => p - 1)} className="px-3 py-1.5 border border-[#d5cfc4] rounded text-xs disabled:opacity-40 bg-[#faf7f2]">&laquo;</button>
-                  {Array.from({ length: Math.min(totalDealPages, 7) }, (_, i) => {
-                    const p = dealPage <= 4 ? i + 1 : Math.min(dealPage - 3 + i, totalDealPages)
-                    return <button key={p} onClick={() => setDealPage(p)} className={`px-3 py-1.5 border rounded text-xs ${p === dealPage ? 'bg-[#1a3a5c] text-white border-[#1a3a5c]' : 'border-[#d5cfc4] bg-[#faf7f2] hover:border-[#1a3a5c]'}`}>{p}</button>
-                  })}
-                  <button disabled={dealPage === totalDealPages} onClick={() => setDealPage(p => p + 1)} className="px-3 py-1.5 border border-[#d5cfc4] rounded text-xs disabled:opacity-40 bg-[#faf7f2]">&raquo;</button>
-                </div>
+            {/* Enrichment Fill Rates */}
+            <div className="bg-[#faf7f2] border border-[#d5cfc4] rounded-xl p-5 mb-6">
+              <h3 className="text-sm font-semibold uppercase tracking-wider text-[#3d5a78] mb-4">Enrichment Fill Rates</h3>
+              <div className="space-y-3">
+                {[
+                  { label: 'LinkedIn URL', key: 'linkedin_url' },
+                  { label: 'Focus Areas', key: 'focus_areas' },
+                  { label: 'Languages', key: 'languages' },
+                  { label: 'Qual Jurisdiction', key: 'qual_jurisdiction' },
+                  { label: 'Qual Year', key: 'qual_year' },
+                  { label: 'Notable Experience', key: 'notable_experience' },
+                  { label: 'Location', key: 'location' },
+                  { label: 'PQE Band', key: 'pqe_band' },
+                  { label: 'Connection Degree', key: 'connection_degree' },
+                ].map(field => {
+                  const stat = enrichmentStats[field.key]
+                  if (!stat) return null
+                  return (
+                    <div key={field.key} className="flex items-center gap-3">
+                      <span className="w-[140px] text-sm text-[#3d5a78]">{field.label}</span>
+                      <div className="flex-1 flex items-center gap-2">
+                        <span className="text-xs font-semibold bg-[#f4a460] text-white px-2 py-0.5 rounded-lg">{stat.pct}%</span>
+                        <div className="flex-1 h-2 bg-[#ede8df] rounded-full overflow-hidden">
+                          <div className="h-full bg-[#f4a460] rounded-full" style={{ width: `${stat.pct}%` }} />
+                        </div>
+                      </div>
+                      <span className="text-xs text-[#3d5a78] w-16 text-right">{stat.filled}/{stat.total}</span>
+                    </div>
+                  )
+                })}
               </div>
-            )}
+            </div>
+
+            {/* By Sector */}
+            <div className="bg-[#faf7f2] border border-[#d5cfc4] rounded-xl p-5 mb-6">
+              <h3 className="text-sm font-semibold uppercase tracking-wider text-[#3d5a78] mb-4">Enrichment by Sector</h3>
+              <div className="overflow-x-auto">
+                <table className="w-full text-sm">
+                  <thead><tr className="border-b-2 border-[#d5cfc4]">
+                    {['Sector', 'Total', 'LinkedIn %', 'Focus Areas %', 'Languages %', 'Qual Jurisdiction %', 'Notable Exp %'].map(h => (
+                      <th key={h} className="text-left py-2 px-3 text-xs font-semibold uppercase text-[#3d5a78]">{h}</th>
+                    ))}
+                  </tr></thead>
+                  <tbody>
+                    {enrichmentBySector.map(s => (
+                      <tr key={s.name} className="border-b border-[#d5cfc4]">
+                        <td className="py-2 px-3 text-[#3d5a78]">{s.name}</td>
+                        <td className="py-2 px-3 font-semibold text-[#1a3a5c]">{s.total}</td>
+                        <td className={`py-2 px-3 font-semibold ${s.linkedInPct >= 50 ? 'text-[#16a34a]' : s.linkedInPct >= 20 ? 'text-[#f4a460]' : 'text-[#dc2626]'}`}>{s.linkedInPct}%</td>
+                        <td className={`py-2 px-3 font-semibold ${s.focusAreasPct >= 50 ? 'text-[#16a34a]' : s.focusAreasPct >= 20 ? 'text-[#f4a460]' : 'text-[#dc2626]'}`}>{s.focusAreasPct}%</td>
+                        <td className={`py-2 px-3 font-semibold ${s.languagesPct >= 50 ? 'text-[#16a34a]' : s.languagesPct >= 20 ? 'text-[#f4a460]' : 'text-[#dc2626]'}`}>{s.languagesPct}%</td>
+                        <td className={`py-2 px-3 font-semibold ${s.qualJurPct >= 50 ? 'text-[#16a34a]' : s.qualJurPct >= 20 ? 'text-[#f4a460]' : 'text-[#dc2626]'}`}>{s.qualJurPct}%</td>
+                        <td className={`py-2 px-3 font-semibold ${s.notableExpPct >= 50 ? 'text-[#16a34a]' : s.notableExpPct >= 20 ? 'text-[#f4a460]' : 'text-[#dc2626]'}`}>{s.notableExpPct}%</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            </div>
+
+            {/* Least Enriched */}
+            <div className="bg-[#faf7f2] border border-[#d5cfc4] rounded-xl p-5">
+              <h3 className="text-sm font-semibold uppercase tracking-wider text-[#3d5a78] mb-4">Least Enriched Lawyers</h3>
+              <div className="overflow-x-auto">
+                <table className="w-full text-sm">
+                  <thead><tr className="border-b-2 border-[#d5cfc4]">
+                    {['Name', 'Company', 'Sector', 'Fields Filled', 'Missing Fields'].map(h => (
+                      <th key={h} className="text-left py-2 px-3 text-xs font-semibold uppercase text-[#3d5a78]">{h}</th>
+                    ))}
+                  </tr></thead>
+                  <tbody>
+                    {leastEnrichedLawyers.map(l => (
+                      <tr key={l.id} className="border-b border-[#d5cfc4] hover:bg-[#ede8df] cursor-pointer" onClick={() => setSelectedLawyer(l)}>
+                        <td className="py-2 px-3 font-semibold">{l.name}</td>
+                        <td className="py-2 px-3 text-[#3d5a78]">{getFirmName(l)}</td>
+                        <td className="py-2 px-3 text-[#3d5a78] text-xs">{l.sub_sectors?.sectors?.name || '—'}</td>
+                        <td className="py-2 px-3 font-semibold text-[#1a3a5c]">{l.fieldsFilled}/9</td>
+                        <td className="py-2 px-3 text-xs text-[#3d5a78]">{l.missingFields.join(', ')}</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            </div>
           </div>
         )}
 
