@@ -44,7 +44,7 @@ export default function Home() {
     async function load() {
       setLoading(true)
       const [lawyerRes, dealRes, sectorRes] = await Promise.all([
-        supabase.from('lawyers').select('*, firms(name, type), sub_sectors(name, sectors(name))').order('total_score', { ascending: false }),
+        supabase.from('lawyers').select('*, firms(name, type), sub_sectors(name, sectors(name))').order('total_score', { ascending: false }).range(0, 2999),
         supabase.from('deals').select('*, sub_sectors(name, sectors(name))').order('year', { ascending: false }),
         supabase.from('sectors').select('*').order('display_order'),
       ])
@@ -138,6 +138,12 @@ export default function Home() {
     else { setSortField(field); setSortDir(-1) }
     setPage(1)
   }, [sortField])
+
+  const firmName = (l: Lawyer) => {
+    const name = l.firms?.name
+    if (!name || name.startsWith('http') || name.includes('linkedin.com')) return '—'
+    return name
+  }
 
   const tierBadge = (tier: string) => {
     const cls = tier === 'T1' ? 'bg-[#dcfce7] text-[#16a34a]' : tier === 'T2' ? 'bg-[#dbeafe] text-[#2563eb]' : 'bg-[#fef3c7] text-[#d97706]'
@@ -261,7 +267,7 @@ export default function Home() {
                       <td className="py-2 px-3 font-semibold">{l.name}</td>
                       <td className="py-2 px-3">{tierBadge(l.tier)}</td>
                       <td className={`py-2 px-3 font-bold ${scoreColor(l.total_score)}`}>{l.total_score}</td>
-                      <td className="py-2 px-3 text-[#3d5a78]">{l.firms?.name || '—'}</td>
+                      <td className="py-2 px-3 text-[#3d5a78]">{firmName(l)}</td>
                       <td className="py-2 px-3 text-[#3d5a78] text-xs">{l.sub_sectors?.sectors?.name || '—'}</td>
                     </tr>
                   ))}
@@ -339,7 +345,7 @@ export default function Home() {
                       <div className="text-xs text-[#3d5a78] truncate max-w-[180px]">{l.title || ''}</div>
                     </td>
                     <td className="py-2.5 px-3">
-                      <div>{l.firms?.name || '—'}</div>
+                      <div>{firmName(l)}</div>
                       <div className="text-xs text-[#3d5a78]">{l.company_type_label || ''}</div>
                     </td>
                     <td className="py-2.5 px-3 text-sm">{l.location || '—'}</td>
@@ -507,7 +513,7 @@ export default function Home() {
               <div>
                 <h3 className="text-xs font-semibold uppercase tracking-wider text-[#3d5a78] mb-2">Profile</h3>
                 {[
-                  ['Company', selectedLawyer.firms?.name || '—'],
+                  ['Company', firmName(selectedLawyer)],
                   ['Type', selectedLawyer.company_type_label || '—'],
                   ['Sector', `${selectedLawyer.sub_sectors?.sectors?.name || '—'} / ${selectedLawyer.sub_sectors?.name || '—'}`],
                   ['Location', selectedLawyer.location || '—'],
