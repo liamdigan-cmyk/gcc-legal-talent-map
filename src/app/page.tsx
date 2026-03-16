@@ -764,7 +764,7 @@ export default function Home() {
                   ))}
                 </tr></thead>
                 <tbody>
-                  {pagedLawyers.map(l => (
+                  {filteredLawyers.map(l => (
                     <tr key={l.id} className="border-b border-[#e2e8f0] hover:bg-[#f8fafc] cursor-pointer transition-colors" onClick={() => setSelectedLawyer(l)}>
                       <td className="py-2.5 px-2 text-center">
                         <button onClick={(e) => toggleStar(l.id, e)} className={`text-base transition-colors ${starred.has(l.id) ? 'text-[#eab308]' : 'text-[#e2e8f0] hover:text-[#eab308]'}`}>★</button>
@@ -840,16 +840,8 @@ export default function Home() {
                 </tbody>
               </table>
 
-              <div className="flex justify-between items-center px-5 py-3 border-t border-[#e2e8f0] bg-[#ffffff]">
-                <span className="text-xs text-[#64748b]">Showing {((page - 1) * perPage) + 1}–{Math.min(page * perPage, filteredLawyers.length)} of {filteredLawyers.length.toLocaleString()}</span>
-                <div className="flex gap-1">
-                  <button disabled={page === 1} onClick={() => setPage(p => p - 1)} className="px-3 py-1.5 border border-[#e2e8f0] rounded text-xs disabled:opacity-40">&laquo;</button>
-                  {Array.from({ length: Math.min(totalLawyerPages, 7) }, (_, i) => {
-                    const p = page <= 4 ? i + 1 : Math.min(page - 3 + i, totalLawyerPages)
-                    return <button key={p} onClick={() => setPage(p)} className={`px-3 py-1.5 border rounded text-xs ${p === page ? 'bg-[#0f172a] text-white border-[#0f172a]' : 'border-[#e2e8f0] hover:border-[#94a3b8] hover:shadow-sm transition-all'}`}>{p}</button>
-                  })}
-                  <button disabled={page === totalLawyerPages} onClick={() => setPage(p => p + 1)} className="px-3 py-1.5 border border-[#e2e8f0] rounded text-xs disabled:opacity-40">&raquo;</button>
-                </div>
+              <div className="px-5 py-3 border-t border-[#e2e8f0]">
+                <span className="text-xs text-[#64748b]">Showing {filteredLawyers.length.toLocaleString()} lawyers</span>
               </div>
             </div>
           </div>
