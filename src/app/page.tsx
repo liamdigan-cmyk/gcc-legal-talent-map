@@ -44,6 +44,80 @@ function getFirmName(l: Lawyer): string {
   return name
 }
 
+const SECTOR_COLORS: Record<string, { bg: string; text: string }> = {
+  'Real Estate': { bg: 'bg-emerald-100', text: 'text-emerald-700' },
+  'Financial Services': { bg: 'bg-blue-100', text: 'text-blue-700' },
+  'Energy & Infrastructure': { bg: 'bg-amber-100', text: 'text-amber-700' },
+  'Consumer & Hospitality': { bg: 'bg-pink-100', text: 'text-pink-700' },
+  'Healthcare & Life Sciences': { bg: 'bg-violet-100', text: 'text-violet-700' },
+  'Technology & Telecoms': { bg: 'bg-cyan-100', text: 'text-cyan-700' },
+  'Industrials': { bg: 'bg-orange-100', text: 'text-orange-700' },
+  'UAE Nationals': { bg: 'bg-red-100', text: 'text-red-700' },
+}
+
+const JURISDICTION_COLORS: Record<string, { bg: string; text: string }> = {
+  'England & Wales': { bg: 'bg-red-50', text: 'text-red-600' },
+  'Egypt': { bg: 'bg-amber-50', text: 'text-amber-700' },
+  'UAE': { bg: 'bg-emerald-50', text: 'text-emerald-700' },
+  'India': { bg: 'bg-orange-50', text: 'text-orange-700' },
+  'Lebanon': { bg: 'bg-rose-50', text: 'text-rose-600' },
+  'Australia': { bg: 'bg-sky-50', text: 'text-sky-700' },
+  'Scotland': { bg: 'bg-blue-50', text: 'text-blue-700' },
+  'United States': { bg: 'bg-indigo-50', text: 'text-indigo-700' },
+  'Jordan': { bg: 'bg-teal-50', text: 'text-teal-700' },
+  'France': { bg: 'bg-violet-50', text: 'text-violet-700' },
+  'South Africa': { bg: 'bg-lime-50', text: 'text-lime-700' },
+  'Canada': { bg: 'bg-fuchsia-50', text: 'text-fuchsia-700' },
+  'Ireland': { bg: 'bg-green-50', text: 'text-green-700' },
+  'Italy': { bg: 'bg-slate-100', text: 'text-slate-600' },
+}
+const DEFAULT_JUR_COLOR = { bg: 'bg-gray-50', text: 'text-gray-600' }
+
+function getJurColor(jur: string) {
+  for (const [key, val] of Object.entries(JURISDICTION_COLORS)) {
+    if (jur.includes(key)) return val
+  }
+  return DEFAULT_JUR_COLOR
+}
+
+function MultiSelect({ options, selected, onChange, placeholder }: {
+  options: string[]; selected: string[]; onChange: (v: string[]) => void; placeholder: string
+}) {
+  const [open, setOpen] = useState(false)
+  return (
+    <div className="relative">
+      <button onClick={() => setOpen(!open)}
+        className="px-3 py-2 bg-white border border-[#e2e8f0] rounded-xl text-sm outline-none hover:border-[#94a3b8] transition-all flex items-center gap-1.5 min-w-[140px]">
+        <span className={selected.length ? 'text-[#0f172a]' : 'text-[#94a3b8]'}>
+          {selected.length ? `${selected.length} selected` : placeholder}
+        </span>
+        <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" className="ml-auto"><path d="M6 9l6 6 6-6"/></svg>
+      </button>
+      {open && (
+        <>
+          <div className="fixed inset-0 z-[100]" onClick={() => setOpen(false)} />
+          <div className="absolute top-full left-0 mt-1 bg-white border border-[#e2e8f0] rounded-xl shadow-lg z-[101] max-h-[280px] overflow-y-auto min-w-[200px]">
+            {selected.length > 0 && (
+              <button onClick={() => { onChange([]); setOpen(false) }}
+                className="w-full text-left px-3 py-2 text-xs text-red-500 hover:bg-red-50 border-b border-[#e2e8f0]">
+                Clear all
+              </button>
+            )}
+            {options.map(opt => (
+              <label key={opt} className="flex items-center gap-2 px-3 py-2 hover:bg-[#f8fafc] cursor-pointer text-sm">
+                <input type="checkbox" checked={selected.includes(opt)}
+                  onChange={() => onChange(selected.includes(opt) ? selected.filter(s => s !== opt) : [...selected, opt])}
+                  className="rounded border-[#e2e8f0] text-[#3b82f6]" />
+                <span className="truncate">{opt}</span>
+              </label>
+            ))}
+          </div>
+        </>
+      )}
+    </div>
+  )
+}
+
 export default function Home() {
   const [tab, setTab] = useState<MainTab>('dashboard')
   const [lawyers, setLawyers] = useState<Lawyer[]>([])
@@ -61,7 +135,8 @@ export default function Home() {
   const [confidenceFilter, setConfidenceFilter] = useState('')
   const [pqeFilter, setPqeFilter] = useState('')
   const [languageFilter, setLanguageFilter] = useState('')
-  const [qualJurFilter, setQualJurFilter] = useState('')
+  const [qualJurFilters, setQualJurFilters] = useState<string[]>([])
+  const [qualYearFilters, setQualYearFilters] = useState<string[]>([])
   const [locationFilter, setLocationFilter] = useState('')
   const [sortField, setSortField] = useState<string>('total_score')
   const [sortDir, setSortDir] = useState<number>(-1)
@@ -144,9 +219,23 @@ export default function Home() {
   const qualJurisdictions = useMemo(() => {
     const set = new Set<string>()
     lawyers.forEach(l => {
-      if (l.qual_jurisdiction) set.add(l.qual_jurisdiction)
+      if (l.qual_jurisdiction) {
+        // Extract individual jurisdictions for the multi-select options
+        l.qual_jurisdiction.split(/[;,\/]/).forEach(j => {
+          const trimmed = j.trim()
+          if (trimmed && trimmed !== 'N/A' && !trimmed.startsWith('Unknown') && !trimmed.startsWith('N/A')) set.add(trimmed)
+        })
+      }
     })
     return Array.from(set).sort()
+  }, [lawyers])
+
+  const qualYears = useMemo(() => {
+    const set = new Set<string>()
+    lawyers.forEach(l => {
+      if (l.qual_year) set.add(String(l.qual_year))
+    })
+    return Array.from(set).sort((a, b) => Number(b) - Number(a))
   }, [lawyers])
 
   const locations = useMemo(() => {
@@ -232,7 +321,12 @@ export default function Home() {
     if (companyTypeFilter) result = result.filter(l => l.company_type_label === companyTypeFilter)
     if (connectionFilter) result = result.filter(l => l.connection_degree === Number(connectionFilter))
     if (languageFilter) result = result.filter(l => l.languages?.includes(languageFilter))
-    if (qualJurFilter) result = result.filter(l => l.qual_jurisdiction === qualJurFilter)
+    if (qualJurFilters.length) result = result.filter(l =>
+      l.qual_jurisdiction && qualJurFilters.some(jur => l.qual_jurisdiction!.includes(jur))
+    )
+    if (qualYearFilters.length) result = result.filter(l =>
+      l.qual_year && qualYearFilters.includes(String(l.qual_year))
+    )
     if (locationFilter) result = result.filter(l => l.location === locationFilter)
     if (confidenceFilter) {
       if (confidenceFilter === 'high') result = result.filter(l => l.confidence >= 9)
@@ -248,7 +342,7 @@ export default function Home() {
       return String(va).localeCompare(String(vb)) * sortDir
     })
     return result
-  }, [lawyers, search, tierFilter, sectorFilter, subSectorFilter, companyTypeFilter, connectionFilter, confidenceFilter, languageFilter, qualJurFilter, locationFilter, sortField, sortDir])
+  }, [lawyers, search, tierFilter, sectorFilter, subSectorFilter, companyTypeFilter, connectionFilter, confidenceFilter, languageFilter, qualJurFilters, qualYearFilters, locationFilter, sortField, sortDir])
 
   const filteredDeals = useMemo(() => {
     let result = deals
@@ -291,11 +385,11 @@ export default function Home() {
   const clearAllFilters = useCallback(() => {
     setSearch(''); setTierFilter(''); setSectorFilter(''); setSubSectorFilter('')
     setCompanyTypeFilter(''); setConnectionFilter(''); setConfidenceFilter('')
-    setLanguageFilter(''); setQualJurFilter(''); setLocationFilter('')
+    setLanguageFilter(''); setQualJurFilters([]); setQualYearFilters([]); setLocationFilter('')
     setPage(1)
   }, [])
 
-  const hasActiveFilters = search || tierFilter || sectorFilter || subSectorFilter || companyTypeFilter || connectionFilter || confidenceFilter || languageFilter || qualJurFilter || locationFilter
+  const hasActiveFilters = search || tierFilter || sectorFilter || subSectorFilter || companyTypeFilter || connectionFilter || confidenceFilter || languageFilter || qualJurFilters.length || qualYearFilters.length || locationFilter
 
   const exportCSV = useCallback(() => {
     const headers = ['Name', 'Title', 'Company', 'Type', 'Sector', 'Sub-Sector', 'Location', 'Focus Areas', 'Languages', 'Qual Jurisdiction', 'Qual Year', 'Tier', 'Score', 'Confidence', 'Connection', 'PQE', 'LinkedIn']
@@ -428,7 +522,6 @@ export default function Home() {
         <div className="flex justify-between items-start mb-6">
           <div>
             <h1 className="text-2xl font-bold"><span className="text-[#0f172a]">GCC</span> Legal Talent Map</h1>
-            <p className="text-[#64748b] text-sm mt-1">Cross-sector intelligence dashboard &middot; v2.0</p>
           </div>
           <div className="flex gap-3">
             <button onClick={exportCSV} className="px-4 py-2 bg-white border border-[#e2e8f0] rounded-xl text-xs font-medium text-[#64748b] hover:border-[#94a3b8] hover:shadow-sm transition-all flex items-center gap-1.5">
@@ -540,7 +633,13 @@ export default function Home() {
                           </span>
                         </td>
                         <td className="py-2 px-3 text-[#64748b]">{getFirmName(l)}</td>
-                        <td className="py-2 px-3 text-[#64748b] text-xs">{l.sub_sectors?.sectors?.name || '—'}</td>
+                        <td className="py-2 px-3">
+                          {l.sub_sectors?.sectors?.name ? (
+                            <span className={`inline-block px-2 py-0.5 rounded-lg text-[11px] font-medium ${SECTOR_COLORS[l.sub_sectors.sectors.name]?.bg || 'bg-gray-100'} ${SECTOR_COLORS[l.sub_sectors.sectors.name]?.text || 'text-gray-600'}`}>
+                              {l.sub_sectors.sectors.name}
+                            </span>
+                          ) : <span className="text-[#e2e8f0] text-xs">—</span>}
+                        </td>
                       </tr>
                     ))}
                   </tbody>
@@ -599,11 +698,10 @@ export default function Home() {
                 <option value="">All Locations</option>
                 {locations.map(loc => <option key={loc} value={loc}>{loc}</option>)}
               </select>
-              <select value={qualJurFilter} onChange={e => { setQualJurFilter(e.target.value); setPage(1) }}
-                className="px-3 py-2 bg-white border border-[#e2e8f0] rounded-xl text-sm focus:border-[#94a3b8] focus:ring-1 focus:ring-[#e2e8f0] outline-none">
-                <option value="">All Jurisdictions</option>
-                {qualJurisdictions.map(jur => <option key={jur} value={jur}>{jur}</option>)}
-              </select>
+              <MultiSelect options={qualJurisdictions} selected={qualJurFilters}
+                onChange={v => { setQualJurFilters(v); setPage(1) }} placeholder="All Jurisdictions" />
+              <MultiSelect options={qualYears} selected={qualYearFilters}
+                onChange={v => { setQualYearFilters(v); setPage(1) }} placeholder="All Qual Years" />
               <select value={languageFilter} onChange={e => { setLanguageFilter(e.target.value); setPage(1) }}
                 className="px-3 py-2 bg-white border border-[#e2e8f0] rounded-xl text-sm focus:border-[#94a3b8] focus:ring-1 focus:ring-[#e2e8f0] outline-none">
                 <option value="">All Languages</option>
@@ -630,7 +728,8 @@ export default function Home() {
                 {subSectorFilter && <span className="inline-flex items-center gap-1 px-2.5 py-1 bg-[#f1f5f9] border border-[#e2e8f0] rounded-2xl text-xs text-[#64748b]">{subSectorFilter} <button onClick={() => setSubSectorFilter('')} className="font-bold ml-1">&times;</button></span>}
                 {companyTypeFilter && <span className="inline-flex items-center gap-1 px-2.5 py-1 bg-[#f1f5f9] border border-[#e2e8f0] rounded-2xl text-xs text-[#64748b]">{companyTypeFilter} <button onClick={() => setCompanyTypeFilter('')} className="font-bold ml-1">&times;</button></span>}
                 {locationFilter && <span className="inline-flex items-center gap-1 px-2.5 py-1 bg-[#f1f5f9] border border-[#e2e8f0] rounded-2xl text-xs text-[#64748b]">{locationFilter} <button onClick={() => setLocationFilter('')} className="font-bold ml-1">&times;</button></span>}
-                {qualJurFilter && <span className="inline-flex items-center gap-1 px-2.5 py-1 bg-[#f1f5f9] border border-[#e2e8f0] rounded-2xl text-xs text-[#64748b]">{qualJurFilter} <button onClick={() => setQualJurFilter('')} className="font-bold ml-1">&times;</button></span>}
+                {qualJurFilters.map(jur => <span key={jur} className="inline-flex items-center gap-1 px-2.5 py-1 bg-[#f1f5f9] border border-[#e2e8f0] rounded-2xl text-xs text-[#64748b]">{jur} <button onClick={() => setQualJurFilters(qualJurFilters.filter(j => j !== jur))} className="font-bold ml-1">&times;</button></span>)}
+                {qualYearFilters.map(yr => <span key={yr} className="inline-flex items-center gap-1 px-2.5 py-1 bg-[#f1f5f9] border border-[#e2e8f0] rounded-2xl text-xs text-[#64748b]">{yr} <button onClick={() => setQualYearFilters(qualYearFilters.filter(y => y !== yr))} className="font-bold ml-1">&times;</button></span>)}
                 {languageFilter && <span className="inline-flex items-center gap-1 px-2.5 py-1 bg-[#f1f5f9] border border-[#e2e8f0] rounded-2xl text-xs text-[#64748b]">{languageFilter} <button onClick={() => setLanguageFilter('')} className="font-bold ml-1">&times;</button></span>}
                 {connectionFilter && <span className="inline-flex items-center gap-1 px-2.5 py-1 bg-[#f1f5f9] border border-[#e2e8f0] rounded-2xl text-xs text-[#64748b]">{connectionFilter}° <button onClick={() => setConnectionFilter('')} className="font-bold ml-1">&times;</button></span>}
                 {confidenceFilter && <span className="inline-flex items-center gap-1 px-2.5 py-1 bg-[#f1f5f9] border border-[#e2e8f0] rounded-2xl text-xs text-[#64748b]">{confidenceFilter} conf <button onClick={() => setConfidenceFilter('')} className="font-bold ml-1">&times;</button></span>}
@@ -695,9 +794,13 @@ export default function Home() {
                       </td>
                       <td className="py-2.5 px-3 text-sm">{getFirmName(l)}</td>
                       <td className="py-2.5 px-3">
-                        <div className="text-xs text-[#64748b]">{l.sub_sectors?.sectors?.name || '—'}</div>
+                        {l.sub_sectors?.sectors?.name ? (
+                          <span className={`inline-block px-2 py-0.5 rounded-lg text-[11px] font-medium ${SECTOR_COLORS[l.sub_sectors.sectors.name]?.bg || 'bg-gray-100'} ${SECTOR_COLORS[l.sub_sectors.sectors.name]?.text || 'text-gray-600'}`}>
+                            {l.sub_sectors.sectors.name}
+                          </span>
+                        ) : <span className="text-[#e2e8f0]">—</span>}
                         {l.sub_sectors?.name && l.sub_sectors.name !== l.sub_sectors?.sectors?.name && (
-                          <div className="text-[11px] text-[#94a3b8]">{l.sub_sectors.name}</div>
+                          <div className="text-[11px] text-[#94a3b8] mt-0.5">{l.sub_sectors.name}</div>
                         )}
                       </td>
                       <td className="py-2.5 px-3 text-xs text-[#64748b]">{l.location || '—'}</td>
@@ -713,11 +816,16 @@ export default function Home() {
                           <span className="text-[#e2e8f0]">—</span>
                         )}
                       </td>
-                      <td className="py-2.5 px-3 text-xs text-[#64748b]">
-                        {l.qual_jurisdiction || <span className="text-[#e2e8f0]">—</span>}
+                      <td className="py-2.5 px-3">
+                        {l.qual_jurisdiction ? (() => {
+                          const c = getJurColor(l.qual_jurisdiction)
+                          return <span className={`inline-block px-2 py-0.5 rounded-lg text-[11px] font-medium ${c.bg} ${c.text}`}>{l.qual_jurisdiction}</span>
+                        })() : <span className="text-[#e2e8f0] text-xs">—</span>}
                       </td>
-                      <td className="py-2.5 px-3 text-xs text-[#64748b]">
-                        {l.qual_year || <span className="text-[#e2e8f0]">—</span>}
+                      <td className="py-2.5 px-3">
+                        {l.qual_year ? (
+                          <span className="inline-block px-2 py-0.5 rounded-lg text-[11px] font-medium bg-slate-100 text-slate-600">{l.qual_year}</span>
+                        ) : <span className="text-[#e2e8f0] text-xs">—</span>}
                       </td>
                       <td className="py-2.5 px-3">
                         {l.connection_degree ? (
