@@ -1,14 +1,15 @@
 'use client'
 
-import { useEffect, useState, useMemo, useCallback, useRef } from 'react'
+import React, { useEffect, useState, useMemo, useCallback, useRef } from 'react'
 import { supabase, Lawyer, Deal, Firm } from '@/lib/supabase'
 import { Mandate, FitScoreBreakdown, computeAllFitScores, loadActiveMandate, saveActiveMandate, createEmptyMandate } from '@/lib/fitScore'
 import MandateBuilder from '@/components/MandateBuilder'
 import MandateBar from '@/components/MandateBar'
 import FirmDrawer from '@/components/FirmDrawer'
 import { buildFirmProfiles, FirmProfile, healthLabel, tierLabel, rankFirmsByType } from '@/lib/firmAnalytics'
+import { buildSupplyDemandMatrix, computeTalentDensity, generateMarketInsights, gapSignalStyle, insightTypeStyle, severityStyle } from '@/lib/marketAnalytics'
 
-type MainTab = 'dashboard' | 'lawyers' | 'deals' | 'firms' | 'enrichment'
+type MainTab = 'dashboard' | 'lawyers' | 'deals' | 'firms' | 'market' | 'enrichment'
 
 interface SectorData {
   name: string
@@ -91,6 +92,7 @@ const Icons = {
   lawyers: <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.75" strokeLinecap="round" strokeLinejoin="round"><path d="M16 21v-2a4 4 0 00-4-4H6a4 4 0 00-4-4v2"/><circle cx="9" cy="7" r="4"/><path d="M22 21v-2a4 4 0 00-3-3.87M16 3.13a4 4 0 010 7.75"/></svg>,
   deals: <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.75" strokeLinecap="round" strokeLinejoin="round"><path d="M14 2H6a2 2 0 00-2 2v16a2 2 0 002 2h12a2 2 0 002-2V8z"/><polyline points="14 2 14 8 20 8"/><line x1="16" y1="13" x2="8" y2="13"/><line x1="16" y1="17" x2="8" y2="17"/></svg>,
   firms: <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.75" strokeLinecap="round" strokeLinejoin="round"><path d="M3 21h18M3 10h18M3 7l9-4 9 4M4 10v11M8 10v11M12 10v11M16 10v11M20 10v11"/></svg>,
+  market: <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.75" strokeLinecap="round" strokeLinejoin="round"><path d="M21 21H4.6c-.56 0-.84 0-1.054-.109a1 1 0 01-.437-.437C3 20.24 3 19.96 3 19.4V3M7 14l4-4 4 4 6-6"/></svg>,
   enrichment: <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.75" strokeLinecap="round" strokeLinejoin="round"><path d="M12 20V10M18 20V4M6 20v-4"/></svg>,
   search: <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round"><circle cx="11" cy="11" r="8"/><path d="M21 21l-4.35-4.35"/></svg>,
   download: <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round"><path d="M21 15v4a2 2 0 01-2 2H5a2 2 0 01-2-2v-4M7 10l5 5 5-5M12 15V3"/></svg>,
@@ -765,6 +767,31 @@ export default function Home() {
     })
   }, [])
 
+  // ── Market Gap Analysis ──────────────────────────────
+  const supplyDemandMatrix = useMemo(() => {
+    return buildSupplyDemandMatrix(lawyers, deals)
+  }, [lawyers, deals])
+
+  const talentDensity = useMemo(() => {
+    return computeTalentDensity(lawyers, deals)
+  }, [lawyers, deals])
+
+  const marketInsights = useMemo(() => {
+    return generateMarketInsights(lawyers, deals, firmProfiles)
+  }, [lawyers, deals, firmProfiles])
+
+  const [marketSubTab, setMarketSubTab] = useState<'heatmap' | 'density' | 'insights'>('heatmap')
+  const [expandedSectors, setExpandedSectors] = useState<Set<string>>(new Set())
+
+  const toggleSectorExpand = useCallback((sector: string) => {
+    setExpandedSectors(prev => {
+      const next = new Set(prev)
+      if (next.has(sector)) next.delete(sector)
+      else next.add(sector)
+      return next
+    })
+  }, [])
+
   // Global search results (command palette)
   const globalSearchResults = useMemo(() => {
     if (!debouncedGlobalSearch || debouncedGlobalSearch.length < 2) return { lawyers: [], deals: [] }
@@ -843,6 +870,7 @@ export default function Home() {
     { key: 'lawyers', label: 'Lawyers', icon: Icons.lawyers, count: lawyers.length },
     { key: 'deals', label: 'Deals', icon: Icons.deals, count: deals.length },
     { key: 'firms', label: 'Firms', icon: Icons.firms, count: firmProfiles.length },
+    { key: 'market', label: 'Market Gaps', icon: Icons.market },
     { key: 'enrichment', label: 'Enrichment', icon: Icons.enrichment },
   ]
 
@@ -1859,6 +1887,281 @@ export default function Home() {
                       )
                     })()}
                   </div>
+                </div>
+              )}
+            </div>
+          )}
+
+          {/* ═══════════════════ MARKET GAP ANALYSIS ═══════════════════ */}
+          {tab === 'market' && (
+            <div>
+              {/* Sub-tabs */}
+              <div className="flex gap-1 mb-6 bg-white border border-[#e2e8f0] rounded-xl p-1 w-fit shadow-sm">
+                {([
+                  { key: 'heatmap' as const, label: 'Supply-Demand Heatmap' },
+                  { key: 'density' as const, label: 'Talent Density' },
+                  { key: 'insights' as const, label: 'Market Insights' },
+                ] as const).map(st => (
+                  <button key={st.key} onClick={() => setMarketSubTab(st.key)}
+                    className={`px-4 py-2 rounded-lg text-[12px] font-semibold transition-all ${
+                      marketSubTab === st.key
+                        ? 'bg-indigo-600 text-white shadow-sm'
+                        : 'text-[#475569] hover:bg-[#f8fafc]'
+                    }`}>
+                    {st.label}
+                    {st.key === 'insights' && marketInsights.length > 0 && (
+                      <span className={`ml-1.5 px-1.5 py-0.5 rounded-full text-[10px] font-bold ${
+                        marketSubTab === st.key ? 'bg-white/20 text-white' : 'bg-red-100 text-red-600'
+                      }`}>{marketInsights.length}</span>
+                    )}
+                  </button>
+                ))}
+              </div>
+
+              {/* ── HEATMAP ── */}
+              {marketSubTab === 'heatmap' && (
+                <div>
+                  {/* KPIs */}
+                  <div className="grid grid-cols-2 md:grid-cols-4 gap-4 mb-6">
+                    {(() => {
+                      const gapSectors = supplyDemandMatrix.filter(s => s.gapSignal === 'gap' || s.gapSignal === 'severe-gap')
+                      const surplusSectors = supplyDemandMatrix.filter(s => s.gapSignal === 'surplus')
+                      const totalLawyers = supplyDemandMatrix.reduce((s, m) => s + m.lawyerCount, 0)
+                      const totalDeals = supplyDemandMatrix.reduce((s, m) => s + m.dealCount, 0)
+                      return [
+                        { label: 'Sectors Analysed', value: supplyDemandMatrix.length },
+                        { label: 'Global Ratio', value: totalDeals > 0 ? `${(totalLawyers / totalDeals).toFixed(1)}:1` : '—', sub: 'lawyers per deal' },
+                        { label: 'Talent Gaps', value: gapSectors.length, color: 'text-red-600' },
+                        { label: 'Surplus Sectors', value: surplusSectors.length, color: 'text-blue-600' },
+                      ].map(kpi => (
+                        <div key={kpi.label} className="bg-white border border-[#e2e8f0] rounded-xl p-4 shadow-sm">
+                          <div className={`text-xl font-bold ${kpi.color || 'text-[#0f172a]'}`}>{kpi.value}</div>
+                          <div className="text-[11px] text-[#94a3b8] mt-0.5 font-medium">{kpi.label}</div>
+                          {kpi.sub && <div className="text-[10px] text-[#cbd5e1] mt-0.5">{kpi.sub}</div>}
+                        </div>
+                      ))
+                    })()}
+                  </div>
+
+                  {/* Heatmap table */}
+                  <div className="bg-white border border-[#e2e8f0] rounded-xl shadow-sm overflow-hidden">
+                    <div className="px-5 py-4 border-b border-[#e2e8f0]">
+                      <h3 className="text-[14px] font-bold text-[#0f172a]">Supply-Demand Matrix</h3>
+                      <p className="text-[12px] text-[#94a3b8] mt-0.5">Click a sector row to expand sub-sectors. Red = talent gap, blue = surplus.</p>
+                    </div>
+                    <table className="w-full">
+                      <thead>
+                        <tr className="border-b border-[#e2e8f0] bg-[#fafbfc]">
+                          <th className="text-left px-5 py-3 text-[11px] font-semibold text-[#94a3b8] uppercase tracking-wider">Sector</th>
+                          <th className="text-center px-3 py-3 text-[11px] font-semibold text-[#94a3b8] uppercase tracking-wider">Lawyers</th>
+                          <th className="text-center px-3 py-3 text-[11px] font-semibold text-[#94a3b8] uppercase tracking-wider">Deals</th>
+                          <th className="text-center px-3 py-3 text-[11px] font-semibold text-[#94a3b8] uppercase tracking-wider">Ratio</th>
+                          <th className="text-center px-3 py-3 text-[11px] font-semibold text-[#94a3b8] uppercase tracking-wider">T1</th>
+                          <th className="text-center px-3 py-3 text-[11px] font-semibold text-[#94a3b8] uppercase tracking-wider">T2</th>
+                          <th className="text-center px-3 py-3 text-[11px] font-semibold text-[#94a3b8] uppercase tracking-wider">T3</th>
+                          <th className="text-center px-3 py-3 text-[11px] font-semibold text-[#94a3b8] uppercase tracking-wider">Avg Score</th>
+                          <th className="text-center px-3 py-3 text-[11px] font-semibold text-[#94a3b8] uppercase tracking-wider">Signal</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {supplyDemandMatrix.map(row => {
+                          const gs = gapSignalStyle(row.gapSignal)
+                          const isExpanded = expandedSectors.has(row.sector)
+                          return (
+                            <React.Fragment key={row.sector}>
+                              <tr
+                                onClick={() => toggleSectorExpand(row.sector)}
+                                className="border-t border-[#f1f5f9] hover:bg-[#fafbfc] cursor-pointer transition-colors">
+                                <td className="px-5 py-3">
+                                  <div className="flex items-center gap-2">
+                                    <span className={`transition-transform text-[10px] text-[#94a3b8] ${isExpanded ? 'rotate-90' : ''}`}>▶</span>
+                                    <span className="text-[13px] font-semibold text-[#0f172a]">{row.sector}</span>
+                                    <span className="text-[10px] text-[#94a3b8]">({row.subSectors.length} sub)</span>
+                                  </div>
+                                </td>
+                                <td className="px-3 py-3 text-center text-[13px] font-bold text-[#0f172a]">{row.lawyerCount}</td>
+                                <td className="px-3 py-3 text-center text-[13px] font-medium text-[#475569]">{row.dealCount}</td>
+                                <td className="px-3 py-3 text-center text-[13px] font-medium text-[#475569]">{row.lawyerDealRatio > 0 ? `${row.lawyerDealRatio}:1` : '—'}</td>
+                                <td className="px-3 py-3 text-center text-[12px] font-bold text-emerald-600">{row.t1Count}</td>
+                                <td className="px-3 py-3 text-center text-[12px] font-bold text-blue-600">{row.t2Count}</td>
+                                <td className="px-3 py-3 text-center text-[12px] font-bold text-amber-600">{row.t3Count}</td>
+                                <td className="px-3 py-3 text-center">
+                                  <span className={`text-[13px] font-bold ${row.avgScore >= 15 ? 'text-emerald-600' : row.avgScore >= 10 ? 'text-blue-600' : 'text-amber-600'}`}>{row.avgScore}</span>
+                                </td>
+                                <td className="px-3 py-3 text-center">
+                                  <span className={`inline-flex px-2 py-0.5 rounded-md text-[10px] font-bold ${gs.bg} ${gs.text}`}>{gs.label}</span>
+                                </td>
+                              </tr>
+                              {isExpanded && row.subSectors.map(ss => {
+                                const ssGs = gapSignalStyle(ss.gapSignal)
+                                return (
+                                  <tr key={`${row.sector}-${ss.name}`} className="border-t border-[#f8fafc] bg-[#fafbfc]/50">
+                                    <td className="pl-12 pr-5 py-2.5">
+                                      <span className="text-[12px] text-[#475569]">{ss.name}</span>
+                                    </td>
+                                    <td className="px-3 py-2.5 text-center text-[12px] font-medium text-[#0f172a]">{ss.lawyerCount}</td>
+                                    <td className="px-3 py-2.5 text-center text-[12px] text-[#475569]">{ss.dealCount}</td>
+                                    <td className="px-3 py-2.5 text-center text-[12px] text-[#475569]">{ss.lawyerDealRatio > 0 ? `${ss.lawyerDealRatio}:1` : '—'}</td>
+                                    <td className="px-3 py-2.5 text-center text-[11px] text-emerald-600">{ss.t1Count}</td>
+                                    <td className="px-3 py-2.5 text-center text-[11px] text-blue-600">{ss.t2Count}</td>
+                                    <td className="px-3 py-2.5 text-center text-[11px] text-amber-600">{ss.t3Count}</td>
+                                    <td className="px-3 py-2.5 text-center text-[12px] font-medium">{ss.avgScore}</td>
+                                    <td className="px-3 py-2.5 text-center">
+                                      <span className={`inline-flex px-1.5 py-0.5 rounded text-[9px] font-bold ${ssGs.bg} ${ssGs.text}`}>{ssGs.label}</span>
+                                    </td>
+                                  </tr>
+                                )
+                              })}
+                            </React.Fragment>
+                          )
+                        })}
+                      </tbody>
+                    </table>
+                  </div>
+                </div>
+              )}
+
+              {/* ── TALENT DENSITY ── */}
+              {marketSubTab === 'density' && (
+                <div className="grid grid-cols-1 md:grid-cols-2 gap-5">
+                  {talentDensity.map(td => (
+                    <div key={td.sector} className="bg-white border border-[#e2e8f0] rounded-xl shadow-sm p-5">
+                      {/* Header */}
+                      <div className="flex items-center justify-between mb-4">
+                        <div>
+                          <h4 className="text-[14px] font-bold text-[#0f172a]">{td.sector}</h4>
+                          <div className="flex items-center gap-3 mt-1 text-[12px] text-[#94a3b8]">
+                            <span><strong className="text-[#0f172a]">{td.lawyerCount}</strong> lawyers</span>
+                            <span><strong className="text-[#0f172a]">{td.dealCount}</strong> deals</span>
+                          </div>
+                        </div>
+                        <div className="text-right">
+                          <div className={`text-[18px] font-bold ${td.lawyersPerDeal >= 1.5 ? 'text-blue-600' : td.lawyersPerDeal >= 0.8 ? 'text-emerald-600' : 'text-red-600'}`}>
+                            {td.lawyersPerDeal > 0 ? `${td.lawyersPerDeal}:1` : '—'}
+                          </div>
+                          <div className="text-[10px] text-[#94a3b8]">lawyers/deal</div>
+                        </div>
+                      </div>
+
+                      {/* Tier distribution */}
+                      <div className="mb-4">
+                        <div className="flex justify-between text-[10px] text-[#94a3b8] mb-1.5">
+                          <span>Quality Distribution</span>
+                          <span>T1 {td.t1Ratio}% · T2 {td.t2Ratio}% · T3 {td.t3Ratio}%</span>
+                        </div>
+                        <div className="h-3 rounded-full overflow-hidden flex bg-[#f1f5f9]">
+                          {td.t1Ratio > 0 && <div className="bg-emerald-500 transition-all" style={{ width: `${td.t1Ratio}%` }} />}
+                          {td.t2Ratio > 0 && <div className="bg-blue-500 transition-all" style={{ width: `${td.t2Ratio}%` }} />}
+                          {td.t3Ratio > 0 && <div className="bg-amber-500 transition-all" style={{ width: `${td.t3Ratio}%` }} />}
+                        </div>
+                      </div>
+
+                      {/* Concentration risk */}
+                      <div className="mb-4">
+                        <div className="flex justify-between text-[10px] text-[#94a3b8] mb-1.5">
+                          <span>Concentration Risk (Top 3 Firms)</span>
+                          <span className={td.concentrationRisk >= 60 ? 'text-red-500 font-bold' : td.concentrationRisk >= 40 ? 'text-amber-500 font-bold' : 'text-emerald-500 font-bold'}>
+                            {td.concentrationRisk}%
+                          </span>
+                        </div>
+                        <div className="h-2 rounded-full overflow-hidden bg-[#f1f5f9]">
+                          <div className={`h-full rounded-full transition-all ${td.concentrationRisk >= 60 ? 'bg-red-400' : td.concentrationRisk >= 40 ? 'bg-amber-400' : 'bg-emerald-400'}`}
+                            style={{ width: `${td.concentrationRisk}%` }} />
+                        </div>
+                      </div>
+
+                      {/* Top firms */}
+                      <div>
+                        <div className="text-[10px] text-[#94a3b8] mb-2">Top Firms</div>
+                        <div className="space-y-1.5">
+                          {td.topFirms.slice(0, 4).map((f, i) => (
+                            <div key={f.name} className="flex items-center gap-2">
+                              <span className="text-[10px] text-[#94a3b8] w-4 text-right">{i + 1}.</span>
+                              <div className="flex-1 flex items-center gap-2">
+                                <span className="text-[11px] text-[#0f172a] truncate">{f.name}</span>
+                                <div className="flex-1 h-1.5 rounded-full bg-[#f1f5f9]">
+                                  <div className="h-full rounded-full bg-indigo-400 transition-all"
+                                    style={{ width: `${td.topFirms[0].count > 0 ? (f.count / td.topFirms[0].count) * 100 : 0}%` }} />
+                                </div>
+                              </div>
+                              <span className="text-[11px] font-bold text-[#0f172a] min-w-[24px] text-right">{f.count}</span>
+                            </div>
+                          ))}
+                        </div>
+                      </div>
+
+                      {/* Avg score */}
+                      <div className="mt-4 pt-3 border-t border-[#f1f5f9] flex justify-between items-center">
+                        <span className="text-[11px] text-[#94a3b8]">Avg Score</span>
+                        <span className={`text-[14px] font-bold ${td.avgScore >= 15 ? 'text-emerald-600' : td.avgScore >= 10 ? 'text-blue-600' : 'text-amber-600'}`}>{td.avgScore}</span>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              )}
+
+              {/* ── MARKET INSIGHTS ── */}
+              {marketSubTab === 'insights' && (
+                <div>
+                  {marketInsights.length === 0 ? (
+                    <div className="bg-white border border-[#e2e8f0] rounded-xl p-12 text-center shadow-sm">
+                      <div className="text-[#94a3b8] text-[14px] font-medium">No market insights detected</div>
+                      <div className="text-[12px] text-[#cbd5e1] mt-1">Insights are auto-generated when notable patterns emerge in the data</div>
+                    </div>
+                  ) : (
+                    <div>
+                      {/* Summary */}
+                      <div className="grid grid-cols-3 gap-4 mb-6">
+                        {[
+                          { label: 'Total Insights', value: marketInsights.length },
+                          { label: 'High Severity', value: marketInsights.filter(i => i.severity === 'high').length, color: 'text-red-600' },
+                          { label: 'Actionable Gaps', value: marketInsights.filter(i => i.type === 'gap' || i.type === 'opportunity').length, color: 'text-emerald-600' },
+                        ].map(kpi => (
+                          <div key={kpi.label} className="bg-white border border-[#e2e8f0] rounded-xl p-4 shadow-sm">
+                            <div className={`text-xl font-bold ${kpi.color || 'text-[#0f172a]'}`}>{kpi.value}</div>
+                            <div className="text-[11px] text-[#94a3b8] mt-0.5 font-medium">{kpi.label}</div>
+                          </div>
+                        ))}
+                      </div>
+
+                      {/* Insight cards */}
+                      <div className="space-y-3">
+                        {marketInsights.map(insight => {
+                          const typeStyle = insightTypeStyle(insight.type)
+                          const sevStyle = severityStyle(insight.severity)
+                          return (
+                            <div key={insight.id} className="bg-white border border-[#e2e8f0] rounded-xl shadow-sm p-5 hover:shadow-md transition-shadow">
+                              <div className="flex items-start gap-4">
+                                {/* Icon */}
+                                <div className={`flex-shrink-0 w-10 h-10 rounded-xl ${typeStyle.bg} flex items-center justify-center text-[18px]`}>
+                                  {typeStyle.icon}
+                                </div>
+                                {/* Content */}
+                                <div className="flex-1 min-w-0">
+                                  <div className="flex items-center gap-2 mb-1">
+                                    <h4 className="text-[13px] font-bold text-[#0f172a]">{insight.title}</h4>
+                                    <span className={`px-1.5 py-0.5 rounded text-[9px] font-bold uppercase tracking-wider ${sevStyle.bg} ${sevStyle.text}`}>
+                                      {insight.severity}
+                                    </span>
+                                  </div>
+                                  <p className="text-[12px] text-[#475569] leading-relaxed">{insight.description}</p>
+                                  <div className="flex items-center gap-3 mt-2">
+                                    <span className="text-[11px] bg-[#f1f5f9] text-[#475569] px-2 py-0.5 rounded-md font-medium">{insight.metric}</span>
+                                    {insight.sector && (
+                                      <span className="text-[11px] text-[#94a3b8]">{insight.sector}{insight.subSector ? ` / ${insight.subSector}` : ''}</span>
+                                    )}
+                                    {insight.firmName && !insight.sector && (
+                                      <span className="text-[11px] text-[#94a3b8]">{insight.firmName}</span>
+                                    )}
+                                  </div>
+                                </div>
+                              </div>
+                            </div>
+                          )
+                        })}
+                      </div>
+                    </div>
+                  )}
                 </div>
               )}
             </div>
