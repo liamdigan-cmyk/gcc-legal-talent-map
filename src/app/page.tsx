@@ -1,7 +1,7 @@
 'use client'
 
 import { useEffect, useState, useMemo, useCallback } from 'react'
-import { supabase, Lawyer, Deal } from '@/lib/supabase'
+import { supabase, Lawyer, Deal, Firm } from '@/lib/supabase'
 
 type MainTab = 'dashboard' | 'lawyers' | 'deals' | 'enrichment'
 
@@ -192,20 +192,24 @@ export default function Home() {
 
   // Drawer
   const [selectedLawyer, setSelectedLawyer] = useState<Lawyer | null>(null)
+  const [selectedDeal, setSelectedDeal] = useState<Deal | null>(null)
   const [starred, setStarred] = useState<Set<string>>(new Set())
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false)
+  const [firms, setFirms] = useState<Firm[]>([])
 
   useEffect(() => {
     async function load() {
       setLoading(true)
-      const [lawyerData, dealRes, sectorRes] = await Promise.all([
+      const [lawyerData, dealRes, sectorRes, firmRes] = await Promise.all([
         fetchAllLawyers(),
         supabase.from('deals').select('*, sub_sectors(name, sectors(name))').order('year', { ascending: false }),
         supabase.from('sectors').select('*').order('display_order'),
+        supabase.from('firms').select('*'),
       ])
       setLawyers(lawyerData)
       setDeals(dealRes.data || [])
       setSectors(sectorRes.data || [])
+      setFirms(firmRes.data || [])
       setLoading(false)
     }
     load()
@@ -214,7 +218,7 @@ export default function Home() {
   // Keyboard shortcut: Escape closes drawer
   useEffect(() => {
     const handler = (e: KeyboardEvent) => {
-      if (e.key === 'Escape') setSelectedLawyer(null)
+      if (e.key === 'Escape') { setSelectedLawyer(null); setSelectedDeal(null) }
     }
     window.addEventListener('keydown', handler)
     return () => window.removeEventListener('keydown', handler)
@@ -523,6 +527,59 @@ export default function Home() {
     })
     return withCounts.sort((a, b) => a.fieldsFilled - b.fieldsFilled).slice(0, 20)
   }, [lawyers])
+
+  // ── Lawyer-Deal linking ────────────────────────────
+  // Build a map: firm_name -> firm_id (for deals that only have firm_name)
+  const firmNameToId = useMemo(() => {
+    const map = new Map<string, string>()
+    firms.forEach(f => { if (f.name) map.set(f.name, f.id) })
+    return map
+  }, [firms])
+
+  // For each deal, resolve to a firm_id (direct or via name match)
+  const dealToFirmId = useCallback((d: Deal): string | null => {
+    if (d.firm_id) return d.firm_id
+    if (d.firm_name) return firmNameToId.get(d.firm_name) || null
+    return null
+  }, [firmNameToId])
+
+  // Map: firm_id -> deals at that firm
+  const firmDealsMap = useMemo(() => {
+    const map = new Map<string, Deal[]>()
+    deals.forEach(d => {
+      const fid = dealToFirmId(d)
+      if (fid) {
+        if (!map.has(fid)) map.set(fid, [])
+        map.get(fid)!.push(d)
+      }
+    })
+    return map
+  }, [deals, dealToFirmId])
+
+  // Map: firm_id -> lawyers at that firm
+  const firmLawyersMap = useMemo(() => {
+    const map = new Map<string, Lawyer[]>()
+    lawyers.forEach(l => {
+      if (l.firm_id) {
+        if (!map.has(l.firm_id)) map.set(l.firm_id, [])
+        map.get(l.firm_id)!.push(l)
+      }
+    })
+    return map
+  }, [lawyers])
+
+  // Get deals linked to a lawyer (via their firm)
+  const getDealsForLawyer = useCallback((l: Lawyer): Deal[] => {
+    if (!l.firm_id) return []
+    return firmDealsMap.get(l.firm_id) || []
+  }, [firmDealsMap])
+
+  // Get lawyers linked to a deal (via the deal's firm)
+  const getLawyersForDeal = useCallback((d: Deal): Lawyer[] => {
+    const fid = dealToFirmId(d)
+    if (!fid) return []
+    return firmLawyersMap.get(fid) || []
+  }, [dealToFirmId, firmLawyersMap])
 
   // ── Display helpers ───────────────────────────────
   const tierBadge = (tier: string) => {
@@ -1063,13 +1120,13 @@ export default function Home() {
                 <div className="overflow-x-auto">
                   <table className="w-full text-[13px]">
                     <thead className="sticky-thead"><tr className="border-b border-[#e2e8f0] bg-[#fafbfc]">
-                      {['Description', 'Firm', 'Client', 'Type', 'Asset Class', 'Value', 'Year', 'Specialism', 'Conf'].map(h => (
+                      {['Description', 'Firm', 'Client', 'Type', 'Asset Class', 'Value', 'Year', 'Specialism', 'Conf', 'Lawyers'].map(h => (
                         <th key={h} className="text-left py-3 px-4 text-[10px] font-semibold uppercase tracking-wider text-[#94a3b8]">{h}</th>
                       ))}
                     </tr></thead>
                     <tbody>
                       {pagedDeals.map(d => (
-                        <tr key={d.id} className="table-row border-b border-[#f1f5f9]">
+                        <tr key={d.id} className="table-row border-b border-[#f1f5f9] cursor-pointer" onClick={() => setSelectedDeal(d)}>
                           <td className="py-3 px-4 max-w-[220px]">
                             <span className="text-[#475569] line-clamp-2 text-[12px] leading-relaxed">{d.description || '—'}</span>
                           </td>
@@ -1102,6 +1159,17 @@ export default function Home() {
                           </td>
                           <td className={`py-3 px-4 text-[11px] font-bold ${d.confidence === 'High' ? 'text-emerald-600' : d.confidence === 'Medium' ? 'text-blue-600' : 'text-[#94a3b8]'}`}>
                             {d.confidence || '—'}
+                          </td>
+                          <td className="py-3 px-4">
+                            {(() => {
+                              const count = getLawyersForDeal(d).length
+                              return count > 0 ? (
+                                <span className="inline-flex items-center gap-1 px-2 py-0.5 bg-indigo-50 rounded-md text-[11px] font-bold text-indigo-600">
+                                  {count}
+                                  <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5"><path d="M16 21v-2a4 4 0 00-4-4H6a4 4 0 00-4-4v2"/><circle cx="9" cy="7" r="4"/></svg>
+                                </span>
+                              ) : <span className="text-[#e2e8f0]">—</span>
+                            })()}
                           </td>
                         </tr>
                       ))}
@@ -1352,6 +1420,40 @@ export default function Home() {
                 </a>
               )}
 
+              {/* Linked Deals */}
+              {(() => {
+                const linkedDeals = getDealsForLawyer(selectedLawyer)
+                if (linkedDeals.length === 0) return null
+                return (
+                  <div>
+                    <h3 className="text-[11px] font-semibold uppercase tracking-wider text-[#94a3b8] mb-3">
+                      Linked Deals <span className="text-indigo-500 ml-1">{linkedDeals.length}</span>
+                    </h3>
+                    <div className="space-y-2 max-h-[280px] overflow-y-auto">
+                      {linkedDeals.slice(0, 20).map(d => (
+                        <div key={d.id}
+                          onClick={() => { setSelectedLawyer(null); setTimeout(() => setSelectedDeal(d), 150) }}
+                          className="p-3 bg-[#fafbfc] border border-[#f1f5f9] rounded-lg cursor-pointer hover:border-[#e2e8f0] hover:shadow-sm transition-all group">
+                          <div className="text-[12px] text-[#0f172a] font-medium leading-snug line-clamp-2">{d.description || 'Untitled deal'}</div>
+                          <div className="flex items-center gap-2 mt-1.5 text-[11px] text-[#94a3b8]">
+                            {d.year && <span className="font-medium">{d.year}</span>}
+                            {d.deal_value && <span className="text-emerald-600 font-bold">{d.deal_value}</span>}
+                            {d.deal_type && <span className="px-1.5 py-0.5 bg-white rounded text-[10px]">{d.deal_type.split(',')[0].trim()}</span>}
+                            {d.confidence && (
+                              <span className={`font-bold ${d.confidence === 'High' ? 'text-emerald-500' : 'text-blue-500'}`}>{d.confidence}</span>
+                            )}
+                            <span className="ml-auto opacity-0 group-hover:opacity-100 text-indigo-500 transition-opacity">View &rarr;</span>
+                          </div>
+                        </div>
+                      ))}
+                      {linkedDeals.length > 20 && (
+                        <div className="text-[11px] text-[#94a3b8] text-center py-1">+{linkedDeals.length - 20} more deals</div>
+                      )}
+                    </div>
+                  </div>
+                )
+              })()}
+
               {/* Scoring breakdown */}
               <div>
                 <h3 className="text-[11px] font-semibold uppercase tracking-wider text-[#94a3b8] mb-3">Scoring Breakdown</h3>
@@ -1382,6 +1484,137 @@ export default function Home() {
                   ))}
                 </div>
               </div>
+            </div>
+          </div>
+        </>
+      )}
+
+      {/* ═══════════════════ DEAL DRAWER ═══════════════════ */}
+      {selectedDeal && (
+        <>
+          <div className="overlay-enter fixed inset-0 bg-black/25 backdrop-blur-[2px] z-[200]" onClick={() => setSelectedDeal(null)} />
+          <div className="drawer-enter fixed top-0 right-0 w-[520px] h-screen bg-white shadow-xl z-[201] overflow-y-auto border-l border-[#e2e8f0]">
+            {/* Header */}
+            <div className="sticky top-0 bg-white z-10 px-7 py-5 border-b border-[#e2e8f0]">
+              <div className="flex justify-between items-start">
+                <div className="flex-1 min-w-0">
+                  <div className="flex items-center gap-2 mb-1">
+                    {selectedDeal.confidence && (
+                      <span className={`text-[11px] font-bold px-2 py-0.5 rounded-md ${selectedDeal.confidence === 'High' ? 'bg-emerald-50 text-emerald-600 ring-1 ring-emerald-200' : 'bg-blue-50 text-blue-600 ring-1 ring-blue-200'}`}>
+                        {selectedDeal.confidence}
+                      </span>
+                    )}
+                    {selectedDeal.year && <span className="text-[12px] text-[#94a3b8] font-medium">{selectedDeal.year}</span>}
+                  </div>
+                  <h2 className="text-[15px] font-bold text-[#0f172a] leading-snug">{selectedDeal.description || 'Untitled Deal'}</h2>
+                </div>
+                <button onClick={() => setSelectedDeal(null)} className="p-1.5 rounded-lg hover:bg-[#f1f5f9] text-[#94a3b8] hover:text-[#0f172a] transition-all">
+                  {Icons.close}
+                </button>
+              </div>
+            </div>
+
+            <div className="px-7 py-6 space-y-6">
+              {/* Deal details */}
+              <div>
+                <h3 className="text-[11px] font-semibold uppercase tracking-wider text-[#94a3b8] mb-3">Deal Details</h3>
+                <div className="space-y-0">
+                  {[
+                    ['Firm', selectedDeal.firm_name || '—'],
+                    ['Client', selectedDeal.client_name || '—'],
+                    ['Type', selectedDeal.deal_type || '—'],
+                    ['Value', selectedDeal.deal_value || '—'],
+                    ['Year', selectedDeal.year ? String(selectedDeal.year) : '—'],
+                    ['Sector', selectedDeal.sub_sectors?.sectors?.name ? `${selectedDeal.sub_sectors.sectors.name} / ${selectedDeal.sub_sectors.name}` : '—'],
+                  ].map(([label, value]) => (
+                    <div key={label} className="flex justify-between py-2 border-b border-[#f1f5f9] last:border-0">
+                      <span className="text-[12px] text-[#94a3b8]">{label}</span>
+                      <span className={`text-[12px] font-medium text-right max-w-[60%] ${label === 'Value' && value !== '—' ? 'text-emerald-600 font-bold' : 'text-[#0f172a]'}`}>{value}</span>
+                    </div>
+                  ))}
+                </div>
+              </div>
+
+              {/* Keywords */}
+              {(selectedDeal.asset_class_keywords || selectedDeal.legal_specialism_keywords || selectedDeal.transaction_keywords) && (
+                <div>
+                  <h3 className="text-[11px] font-semibold uppercase tracking-wider text-[#94a3b8] mb-3">Keywords</h3>
+                  <div className="space-y-2">
+                    {selectedDeal.asset_class_keywords && (
+                      <div>
+                        <div className="text-[10px] text-[#94a3b8] uppercase tracking-wider mb-1">Asset Class</div>
+                        <div className="flex flex-wrap gap-1">
+                          {selectedDeal.asset_class_keywords.split(',').map((k, i) => (
+                            <span key={i} className="px-2 py-0.5 bg-blue-50 rounded-md text-[11px] text-blue-600 font-medium">{k.trim()}</span>
+                          ))}
+                        </div>
+                      </div>
+                    )}
+                    {selectedDeal.legal_specialism_keywords && (
+                      <div>
+                        <div className="text-[10px] text-[#94a3b8] uppercase tracking-wider mb-1">Legal Specialism</div>
+                        <div className="flex flex-wrap gap-1">
+                          {selectedDeal.legal_specialism_keywords.split(',').map((k, i) => (
+                            <span key={i} className="px-2 py-0.5 bg-amber-50 rounded-md text-[11px] text-amber-700 font-medium">{k.trim()}</span>
+                          ))}
+                        </div>
+                      </div>
+                    )}
+                    {selectedDeal.transaction_keywords && (
+                      <div>
+                        <div className="text-[10px] text-[#94a3b8] uppercase tracking-wider mb-1">Transaction</div>
+                        <div className="flex flex-wrap gap-1">
+                          {selectedDeal.transaction_keywords.split(',').map((k, i) => (
+                            <span key={i} className="px-2 py-0.5 bg-slate-100 rounded-md text-[11px] text-slate-600 font-medium">{k.trim()}</span>
+                          ))}
+                        </div>
+                      </div>
+                    )}
+                  </div>
+                </div>
+              )}
+
+              {/* Linked Lawyers */}
+              {(() => {
+                const linkedLawyers = getLawyersForDeal(selectedDeal)
+                if (linkedLawyers.length === 0) return (
+                  <div className="text-center py-6 text-[#94a3b8]">
+                    <div className="text-[13px] font-medium">No linked lawyers found</div>
+                    <div className="text-[11px] mt-1">This deal&#39;s firm doesn&#39;t match any lawyers in the database</div>
+                  </div>
+                )
+                const sorted = [...linkedLawyers].sort((a, b) => b.total_score - a.total_score)
+                return (
+                  <div>
+                    <h3 className="text-[11px] font-semibold uppercase tracking-wider text-[#94a3b8] mb-3">
+                      Lawyers at this Firm <span className="text-indigo-500 ml-1">{sorted.length}</span>
+                    </h3>
+                    <div className="space-y-1.5">
+                      {sorted.map(l => (
+                        <div key={l.id}
+                          onClick={() => { setSelectedDeal(null); setTimeout(() => setSelectedLawyer(l), 150) }}
+                          className="flex items-center gap-3 p-3 bg-[#fafbfc] border border-[#f1f5f9] rounded-lg cursor-pointer hover:border-[#e2e8f0] hover:shadow-sm transition-all group">
+                          <div className="flex-shrink-0">{tierBadge(l.tier)}</div>
+                          <div className="flex-1 min-w-0">
+                            <div className="text-[12px] font-semibold text-[#0f172a] truncate">{l.name}</div>
+                            {l.title && <div className="text-[11px] text-[#94a3b8] truncate">{l.title}</div>}
+                          </div>
+                          <div className="flex items-center gap-2 flex-shrink-0">
+                            <span className={`text-[12px] font-bold ${scoreColor(l.total_score)}`}>{l.total_score}</span>
+                            {l.linkedin_url && l.linkedin_url.startsWith('http') && (
+                              <a href={l.linkedin_url} target="_blank" rel="noopener noreferrer"
+                                onClick={(e) => e.stopPropagation()} className="opacity-50 hover:opacity-100 transition-opacity">
+                                {Icons.linkedin}
+                              </a>
+                            )}
+                            <span className="opacity-0 group-hover:opacity-100 text-indigo-500 text-[11px] transition-opacity">View &rarr;</span>
+                          </div>
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                )
+              })()}
             </div>
           </div>
         </>
