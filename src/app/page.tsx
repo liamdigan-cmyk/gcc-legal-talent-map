@@ -1,9 +1,14 @@
 'use client'
 
-import { useEffect, useState, useMemo, useCallback } from 'react'
+import { useEffect, useState, useMemo, useCallback, useRef } from 'react'
 import { supabase, Lawyer, Deal, Firm } from '@/lib/supabase'
+import { Mandate, FitScoreBreakdown, computeAllFitScores, loadActiveMandate, saveActiveMandate, createEmptyMandate } from '@/lib/fitScore'
+import MandateBuilder from '@/components/MandateBuilder'
+import MandateBar from '@/components/MandateBar'
+import FirmDrawer from '@/components/FirmDrawer'
+import { buildFirmProfiles, FirmProfile, healthLabel, tierLabel, rankFirmsByType } from '@/lib/firmAnalytics'
 
-type MainTab = 'dashboard' | 'lawyers' | 'deals' | 'enrichment'
+type MainTab = 'dashboard' | 'lawyers' | 'deals' | 'firms' | 'enrichment'
 
 interface SectorData {
   name: string
@@ -85,6 +90,7 @@ const Icons = {
   dashboard: <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.75" strokeLinecap="round" strokeLinejoin="round"><rect x="3" y="3" width="7" height="7" rx="1"/><rect x="14" y="3" width="7" height="7" rx="1"/><rect x="3" y="14" width="7" height="7" rx="1"/><rect x="14" y="14" width="7" height="7" rx="1"/></svg>,
   lawyers: <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.75" strokeLinecap="round" strokeLinejoin="round"><path d="M16 21v-2a4 4 0 00-4-4H6a4 4 0 00-4-4v2"/><circle cx="9" cy="7" r="4"/><path d="M22 21v-2a4 4 0 00-3-3.87M16 3.13a4 4 0 010 7.75"/></svg>,
   deals: <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.75" strokeLinecap="round" strokeLinejoin="round"><path d="M14 2H6a2 2 0 00-2 2v16a2 2 0 002 2h12a2 2 0 002-2V8z"/><polyline points="14 2 14 8 20 8"/><line x1="16" y1="13" x2="8" y2="13"/><line x1="16" y1="17" x2="8" y2="17"/></svg>,
+  firms: <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.75" strokeLinecap="round" strokeLinejoin="round"><path d="M3 21h18M3 10h18M3 7l9-4 9 4M4 10v11M8 10v11M12 10v11M16 10v11M20 10v11"/></svg>,
   enrichment: <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.75" strokeLinecap="round" strokeLinejoin="round"><path d="M12 20V10M18 20V4M6 20v-4"/></svg>,
   search: <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round"><circle cx="11" cy="11" r="8"/><path d="M21 21l-4.35-4.35"/></svg>,
   download: <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round"><path d="M21 15v4a2 2 0 01-2 2H5a2 2 0 01-2-2v-4M7 10l5 5 5-5M12 15V3"/></svg>,
@@ -134,13 +140,39 @@ function MultiSelect({ options, selected, onChange, placeholder }: {
   )
 }
 
+/* ── Debounced value hook ─────────────────────────────── */
+function useDebounce<T>(value: T, delay: number): T {
+  const [debounced, setDebounced] = useState(value)
+  useEffect(() => {
+    const timer = setTimeout(() => setDebounced(value), delay)
+    return () => clearTimeout(timer)
+  }, [value, delay])
+  return debounced
+}
+
+/* ── Highlighted text component ──────────────────────── */
+function HighlightText({ text, query }: { text: string; query: string }) {
+  if (!query || query.length < 2 || !text) return <>{text}</>
+  const regex = new RegExp(`(${query.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')})`, 'gi')
+  const parts = text.split(regex)
+  return (
+    <>
+      {parts.map((part, i) =>
+        regex.test(part)
+          ? <mark key={i} className="bg-amber-100 text-amber-900 rounded-sm px-0.5">{part}</mark>
+          : <span key={i}>{part}</span>
+      )}
+    </>
+  )
+}
+
 /* ── Score Ring SVG ───────────────────────────────────── */
-function ScoreRing({ score, max = 23, size = 72 }: { score: number; max?: number; size?: number }) {
+function ScoreRing({ score, max = 23, size = 72, overrideColor }: { score: number; max?: number; size?: number; overrideColor?: string }) {
   const pct = Math.min(score / max, 1)
   const r = (size - 8) / 2
   const circ = 2 * Math.PI * r
   const offset = circ * (1 - pct)
-  const color = score >= 18 ? '#10b981' : score >= 12 ? '#3b82f6' : '#f59e0b'
+  const color = overrideColor || (score >= 18 ? '#10b981' : score >= 12 ? '#3b82f6' : '#f59e0b')
   return (
     <svg width={size} height={size} className="transform -rotate-90">
       <circle cx={size/2} cy={size/2} r={r} fill="none" stroke="#f1f5f9" strokeWidth="5" />
@@ -196,6 +228,32 @@ export default function Home() {
   const [starred, setStarred] = useState<Set<string>>(new Set())
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false)
   const [firms, setFirms] = useState<Firm[]>([])
+  const [globalSearch, setGlobalSearch] = useState('')
+  const [globalSearchOpen, setGlobalSearchOpen] = useState(false)
+  const globalSearchRef = useRef<HTMLInputElement>(null)
+  const lawyerSearchRef = useRef<HTMLInputElement>(null)
+  const dealSearchRef = useRef<HTMLInputElement>(null)
+
+  // Mandate state
+  const [activeMandate, setActiveMandate] = useState<Mandate | null>(null)
+  const [mandateBuilderOpen, setMandateBuilderOpen] = useState(false)
+
+  // Firm Intelligence state
+  const [selectedFirm, setSelectedFirm] = useState<FirmProfile | null>(null)
+  const [firmSearch, setFirmSearch] = useState('')
+  const [firmTypeFilter, setFirmTypeFilter] = useState('')
+  const [firmTierFilter, setFirmTierFilter] = useState('')
+  const [firmSortField, setFirmSortField] = useState<string>('lawyerCount')
+  const [firmSortDir, setFirmSortDir] = useState<number>(-1)
+  const [firmPage, setFirmPage] = useState(1)
+  const firmPerPage = 30
+  const [compareList, setCompareList] = useState<FirmProfile[]>([])
+
+  // Debounced search values for performance
+  const debouncedSearch = useDebounce(search, 150)
+  const debouncedDealSearch = useDebounce(dealSearch, 150)
+  const debouncedGlobalSearch = useDebounce(globalSearch, 200)
+  const debouncedFirmSearch = useDebounce(firmSearch, 150)
 
   useEffect(() => {
     async function load() {
@@ -210,19 +268,36 @@ export default function Home() {
       setDeals(dealRes.data || [])
       setSectors(sectorRes.data || [])
       setFirms(firmRes.data || [])
+      // Load saved mandate
+      try { const saved = loadActiveMandate(); if (saved) setActiveMandate(saved) } catch {}
       setLoading(false)
     }
     load()
   }, [])
 
-  // Keyboard shortcut: Escape closes drawer
+  // Keyboard shortcuts
   useEffect(() => {
     const handler = (e: KeyboardEvent) => {
-      if (e.key === 'Escape') { setSelectedLawyer(null); setSelectedDeal(null) }
+      if (e.key === 'Escape') {
+        if (globalSearchOpen) { setGlobalSearchOpen(false); setGlobalSearch(''); return }
+        setSelectedLawyer(null); setSelectedDeal(null)
+      }
+      // Cmd+K or Ctrl+K opens global search
+      if ((e.metaKey || e.ctrlKey) && e.key === 'k') {
+        e.preventDefault()
+        setGlobalSearchOpen(true)
+        setTimeout(() => globalSearchRef.current?.focus(), 50)
+      }
+      // "/" focuses tab-level search (when not in an input)
+      if (e.key === '/' && !globalSearchOpen && !(e.target instanceof HTMLInputElement || e.target instanceof HTMLTextAreaElement || e.target instanceof HTMLSelectElement)) {
+        e.preventDefault()
+        if (tab === 'lawyers') lawyerSearchRef.current?.focus()
+        else if (tab === 'deals') dealSearchRef.current?.focus()
+      }
     }
     window.addEventListener('keydown', handler)
     return () => window.removeEventListener('keydown', handler)
-  }, [])
+  }, [globalSearchOpen, tab])
 
   // ── Derived data ──────────────────────────────────
   const sectorStats: SectorData[] = useMemo(() => {
@@ -334,11 +409,53 @@ export default function Home() {
     return Array.from(map.entries()).sort((a, b) => b[1] - a[1]).map(([name]) => name)
   }, [deals])
 
+  // ── Lawyer-Deal linking ────────────────────────────
+  const firmNameToId = useMemo(() => {
+    const map = new Map<string, string>()
+    firms.forEach(f => { if (f.name) map.set(f.name, f.id) })
+    return map
+  }, [firms])
+
+  const dealToFirmId = useCallback((d: Deal): string | null => {
+    if (d.firm_id) return d.firm_id
+    if (d.firm_name) return firmNameToId.get(d.firm_name) || null
+    return null
+  }, [firmNameToId])
+
+  const firmDealsMap = useMemo(() => {
+    const map = new Map<string, Deal[]>()
+    deals.forEach(d => {
+      const fid = dealToFirmId(d)
+      if (fid) {
+        if (!map.has(fid)) map.set(fid, [])
+        map.get(fid)!.push(d)
+      }
+    })
+    return map
+  }, [deals, dealToFirmId])
+
+  const firmLawyersMap = useMemo(() => {
+    const map = new Map<string, Lawyer[]>()
+    lawyers.forEach(l => {
+      if (l.firm_id) {
+        if (!map.has(l.firm_id)) map.set(l.firm_id, [])
+        map.get(l.firm_id)!.push(l)
+      }
+    })
+    return map
+  }, [lawyers])
+
+  // ── Fit Scores (per mandate) ──────────────────────
+  const fitScores = useMemo<Map<string, FitScoreBreakdown>>(() => {
+    if (!activeMandate) return new Map()
+    return computeAllFitScores(lawyers, activeMandate, firmDealsMap)
+  }, [lawyers, activeMandate, firmDealsMap])
+
   // ── Filtered lawyers ──────────────────────────────
   const filteredLawyers = useMemo(() => {
     let result = lawyers
-    if (search) {
-      const q = search.toLowerCase()
+    if (debouncedSearch) {
+      const q = debouncedSearch.toLowerCase()
       result = result.filter(l =>
         l.name?.toLowerCase().includes(q) ||
         getFirmName(l).toLowerCase().includes(q) ||
@@ -346,7 +463,11 @@ export default function Home() {
         l.notable_experience?.toLowerCase().includes(q) ||
         l.languages?.toLowerCase().includes(q) ||
         l.qual_jurisdiction?.toLowerCase().includes(q) ||
-        l.location?.toLowerCase().includes(q)
+        l.location?.toLowerCase().includes(q) ||
+        l.title?.toLowerCase().includes(q) ||
+        l.sub_sectors?.sectors?.name?.toLowerCase().includes(q) ||
+        l.sub_sectors?.name?.toLowerCase().includes(q) ||
+        l.pqe_band?.toLowerCase().includes(q)
       )
     }
     if (tierFilter) result = result.filter(l => l.tier === tierFilter)
@@ -367,27 +488,37 @@ export default function Home() {
       else if (confidenceFilter === 'mid') result = result.filter(l => l.confidence >= 5 && l.confidence <= 8)
       else if (confidenceFilter === 'low') result = result.filter(l => l.confidence <= 4)
     }
+    result = [...result] // shallow copy before sort to avoid mutating state
     result.sort((a, b) => {
       let va: any, vb: any
-      if (sortField === 'firms.name') { va = getFirmName(a); vb = getFirmName(b) }
+      if (sortField === 'fit_score') {
+        va = fitScores.get(a.id)?.total ?? 0
+        vb = fitScores.get(b.id)?.total ?? 0
+      } else if (sortField === 'firms.name') { va = getFirmName(a); vb = getFirmName(b) }
       else if (sortField === 'sub_sectors.sectors.name') { va = a.sub_sectors?.sectors?.name || ''; vb = b.sub_sectors?.sectors?.name || '' }
       else { va = (a as any)[sortField] ?? ''; vb = (b as any)[sortField] ?? '' }
       if (typeof va === 'number' && typeof vb === 'number') return (va - vb) * sortDir
       return String(va).localeCompare(String(vb)) * sortDir
     })
     return result
-  }, [lawyers, search, tierFilter, sectorFilter, subSectorFilter, companyTypeFilter, connectionFilter, confidenceFilter, languageFilter, qualJurFilters, qualYearFilters, locationFilter, sortField, sortDir])
+  }, [lawyers, debouncedSearch, tierFilter, sectorFilter, subSectorFilter, companyTypeFilter, connectionFilter, confidenceFilter, languageFilter, qualJurFilters, qualYearFilters, locationFilter, sortField, sortDir, fitScores])
 
   const filteredDeals = useMemo(() => {
     let result = deals
-    if (dealSearch) {
-      const q = dealSearch.toLowerCase()
+    if (debouncedDealSearch) {
+      const q = debouncedDealSearch.toLowerCase()
       result = result.filter(d =>
         d.description?.toLowerCase().includes(q) ||
         d.firm_name?.toLowerCase().includes(q) ||
         d.client_name?.toLowerCase().includes(q) ||
         d.asset_class_keywords?.toLowerCase().includes(q) ||
-        d.legal_specialism_keywords?.toLowerCase().includes(q)
+        d.legal_specialism_keywords?.toLowerCase().includes(q) ||
+        d.deal_type?.toLowerCase().includes(q) ||
+        d.transaction_keywords?.toLowerCase().includes(q) ||
+        d.sub_sectors?.sectors?.name?.toLowerCase().includes(q) ||
+        d.sub_sectors?.name?.toLowerCase().includes(q) ||
+        (d.deal_value && d.deal_value.toLowerCase().includes(q)) ||
+        (d.year && String(d.year).includes(q))
       )
     }
     if (dealTypeFilter) result = result.filter(d => d.deal_type?.includes(dealTypeFilter))
@@ -398,7 +529,7 @@ export default function Home() {
     if (dealAssetFilter) result = result.filter(d => d.asset_class_keywords?.includes(dealAssetFilter))
     if (dealSpecialismFilter) result = result.filter(d => d.legal_specialism_keywords?.includes(dealSpecialismFilter))
     return result
-  }, [deals, dealSearch, dealTypeFilter, dealConfFilter, dealYearFilter, dealFirmFilter, dealSectorFilter, dealAssetFilter, dealSpecialismFilter])
+  }, [deals, debouncedDealSearch, dealTypeFilter, dealConfFilter, dealYearFilter, dealFirmFilter, dealSectorFilter, dealAssetFilter, dealSpecialismFilter])
 
   const pagedLawyers = filteredLawyers.slice((page - 1) * perPage, page * perPage)
   const totalLawyerPages = Math.ceil(filteredLawyers.length / perPage)
@@ -528,45 +659,135 @@ export default function Home() {
     return withCounts.sort((a, b) => a.fieldsFilled - b.fieldsFilled).slice(0, 20)
   }, [lawyers])
 
-  // ── Lawyer-Deal linking ────────────────────────────
-  // Build a map: firm_name -> firm_id (for deals that only have firm_name)
-  const firmNameToId = useMemo(() => {
-    const map = new Map<string, string>()
-    firms.forEach(f => { if (f.name) map.set(f.name, f.id) })
-    return map
-  }, [firms])
-
-  // For each deal, resolve to a firm_id (direct or via name match)
-  const dealToFirmId = useCallback((d: Deal): string | null => {
-    if (d.firm_id) return d.firm_id
-    if (d.firm_name) return firmNameToId.get(d.firm_name) || null
-    return null
-  }, [firmNameToId])
-
-  // Map: firm_id -> deals at that firm
-  const firmDealsMap = useMemo(() => {
-    const map = new Map<string, Deal[]>()
-    deals.forEach(d => {
-      const fid = dealToFirmId(d)
-      if (fid) {
-        if (!map.has(fid)) map.set(fid, [])
-        map.get(fid)!.push(d)
-      }
-    })
-    return map
-  }, [deals, dealToFirmId])
-
-  // Map: firm_id -> lawyers at that firm
-  const firmLawyersMap = useMemo(() => {
-    const map = new Map<string, Lawyer[]>()
+  // Sub-sector list for mandate builder
+  const allSubSectors = useMemo(() => {
+    const result: { name: string; sectorName: string }[] = []
+    const seen = new Set<string>()
     lawyers.forEach(l => {
-      if (l.firm_id) {
-        if (!map.has(l.firm_id)) map.set(l.firm_id, [])
-        map.get(l.firm_id)!.push(l)
+      const ssName = l.sub_sectors?.name
+      const sName = l.sub_sectors?.sectors?.name
+      if (ssName && sName) {
+        const key = `${sName}|${ssName}`
+        if (!seen.has(key)) { seen.add(key); result.push({ name: ssName, sectorName: sName }) }
       }
     })
-    return map
+    return result.sort((a, b) => a.name.localeCompare(b.name))
   }, [lawyers])
+
+  // Specialism keywords from deals (for mandate builder)
+  const allSpecialisms = useMemo(() => {
+    const set = new Set<string>()
+    deals.forEach(d => {
+      if (d.deal_type) d.deal_type.split(',').forEach(t => { const v = t.trim(); if (v) set.add(v) })
+      if (d.legal_specialism_keywords) d.legal_specialism_keywords.split(',').forEach(t => { const v = t.trim(); if (v) set.add(v) })
+    })
+    lawyers.forEach(l => {
+      if (l.focus_areas) l.focus_areas.split(/[;,]/).forEach(a => { const v = a.trim(); if (v) set.add(v) })
+    })
+    return Array.from(set).sort()
+  }, [deals, lawyers])
+
+  const handleActivateMandate = useCallback((mandate: Mandate) => {
+    setActiveMandate(mandate)
+    saveActiveMandate(mandate)
+    setSortField('fit_score')
+    setSortDir(-1)
+    setPage(1)
+    setTab('lawyers')
+  }, [])
+
+  const handleClearMandate = useCallback(() => {
+    setActiveMandate(null)
+    saveActiveMandate(null)
+    if (sortField === 'fit_score') { setSortField('total_score'); setSortDir(-1) }
+  }, [sortField])
+
+  // Mandate fit stats (computed from filtered lawyers for consistency with resultCount)
+  const mandateStats = useMemo(() => {
+    if (!activeMandate || fitScores.size === 0) return { strong: 0, good: 0 }
+    let strong = 0, good = 0
+    filteredLawyers.forEach(l => {
+      const fs = fitScores.get(l.id)
+      if (fs) { if (fs.total >= 75) strong++; else if (fs.total >= 50) good++ }
+    })
+    return { strong, good }
+  }, [activeMandate, fitScores, filteredLawyers])
+
+  // ── Firm Intelligence ─────────────────────────────
+  const firmProfiles = useMemo(() => {
+    return buildFirmProfiles(firms, lawyers, deals, firmDealsMap, firmLawyersMap)
+  }, [firms, lawyers, deals, firmDealsMap, firmLawyersMap])
+
+  const firmTypes = useMemo(() => {
+    const set = new Set<string>()
+    firmProfiles.forEach(f => { if (f.type) set.add(f.type) })
+    return Array.from(set).sort()
+  }, [firmProfiles])
+
+  const firmsByType = useMemo(() => rankFirmsByType(firmProfiles), [firmProfiles])
+
+  const filteredFirms = useMemo(() => {
+    let result = firmProfiles
+    if (debouncedFirmSearch) {
+      const q = debouncedFirmSearch.toLowerCase()
+      result = result.filter(f =>
+        f.name.toLowerCase().includes(q) ||
+        f.type?.toLowerCase().includes(q) ||
+        f.topSectors.some(s => s.name.toLowerCase().includes(q))
+      )
+    }
+    if (firmTypeFilter) result = result.filter(f => f.type === firmTypeFilter)
+    if (firmTierFilter) result = result.filter(f => String(f.qualityTier) === firmTierFilter)
+    result = [...result]
+    result.sort((a, b) => {
+      const va = (a as any)[firmSortField] ?? 0
+      const vb = (b as any)[firmSortField] ?? 0
+      if (typeof va === 'number' && typeof vb === 'number') return (va - vb) * firmSortDir
+      return String(va).localeCompare(String(vb)) * firmSortDir
+    })
+    return result
+  }, [firmProfiles, debouncedFirmSearch, firmTypeFilter, firmTierFilter, firmSortField, firmSortDir])
+
+  const pagedFirms = filteredFirms.slice((firmPage - 1) * firmPerPage, firmPage * firmPerPage)
+  const totalFirmPages = Math.ceil(filteredFirms.length / firmPerPage)
+
+  const handleFirmSort = useCallback((field: string) => {
+    if (firmSortField === field) setFirmSortDir(d => d * -1)
+    else { setFirmSortField(field); setFirmSortDir(-1) }
+    setFirmPage(1)
+  }, [firmSortField])
+
+  const toggleCompare = useCallback((firm: FirmProfile) => {
+    setCompareList(prev => {
+      if (prev.some(f => f.id === firm.id)) return prev.filter(f => f.id !== firm.id)
+      if (prev.length >= 3) return prev // max 3
+      return [...prev, firm]
+    })
+  }, [])
+
+  // Global search results (command palette)
+  const globalSearchResults = useMemo(() => {
+    if (!debouncedGlobalSearch || debouncedGlobalSearch.length < 2) return { lawyers: [], deals: [] }
+    const q = debouncedGlobalSearch.toLowerCase()
+    const matchedLawyers = lawyers.filter(l =>
+      l.name?.toLowerCase().includes(q) ||
+      getFirmName(l).toLowerCase().includes(q) ||
+      l.focus_areas?.toLowerCase().includes(q) ||
+      l.title?.toLowerCase().includes(q) ||
+      l.sub_sectors?.sectors?.name?.toLowerCase().includes(q) ||
+      l.sub_sectors?.name?.toLowerCase().includes(q)
+    ).slice(0, 8)
+    const matchedDeals = deals.filter(d =>
+      d.description?.toLowerCase().includes(q) ||
+      d.firm_name?.toLowerCase().includes(q) ||
+      d.client_name?.toLowerCase().includes(q) ||
+      d.deal_type?.toLowerCase().includes(q) ||
+      d.asset_class_keywords?.toLowerCase().includes(q) ||
+      d.legal_specialism_keywords?.toLowerCase().includes(q) ||
+      d.sub_sectors?.sectors?.name?.toLowerCase().includes(q)
+    ).slice(0, 5)
+    return { lawyers: matchedLawyers, deals: matchedDeals }
+  }, [debouncedGlobalSearch, lawyers, deals])
 
   // Get deals linked to a lawyer (via their firm)
   const getDealsForLawyer = useCallback((l: Lawyer): Deal[] => {
@@ -621,6 +842,7 @@ export default function Home() {
     { key: 'dashboard', label: 'Dashboard', icon: Icons.dashboard },
     { key: 'lawyers', label: 'Lawyers', icon: Icons.lawyers, count: lawyers.length },
     { key: 'deals', label: 'Deals', icon: Icons.deals, count: deals.length },
+    { key: 'firms', label: 'Firms', icon: Icons.firms, count: firmProfiles.length },
     { key: 'enrichment', label: 'Enrichment', icon: Icons.enrichment },
   ]
 
@@ -694,8 +916,32 @@ export default function Home() {
             {tab === 'lawyers' && hasActiveFilters && (
               <span className="text-[12px] bg-indigo-50 text-indigo-600 px-2 py-0.5 rounded-md font-medium">{filteredLawyers.length.toLocaleString()} results</span>
             )}
+            {tab === 'deals' && (dealSearch || dealTypeFilter || dealConfFilter || dealYearFilter || dealFirmFilter || dealSectorFilter || dealAssetFilter || dealSpecialismFilter) && (
+              <span className="text-[12px] bg-indigo-50 text-indigo-600 px-2 py-0.5 rounded-md font-medium">{filteredDeals.length} results</span>
+            )}
+            {tab === 'firms' && (firmSearch || firmTypeFilter || firmTierFilter) && (
+              <span className="text-[12px] bg-indigo-50 text-indigo-600 px-2 py-0.5 rounded-md font-medium">{filteredFirms.length} results</span>
+            )}
           </div>
           <div className="flex items-center gap-2">
+            {/* Global search trigger */}
+            <button onClick={() => { setGlobalSearchOpen(true); setTimeout(() => globalSearchRef.current?.focus(), 50) }}
+              className="flex items-center gap-2 px-3 py-[6px] bg-[#f8fafc] border border-[#e2e8f0] rounded-lg text-[12px] text-[#94a3b8] hover:border-[#cbd5e1] hover:shadow-sm transition-all min-w-[200px]">
+              {Icons.search}
+              <span>Search everything...</span>
+              <kbd className="ml-auto text-[10px] bg-white border border-[#e2e8f0] rounded px-1.5 py-0.5 font-mono text-[#94a3b8]">⌘K</kbd>
+            </button>
+            <button onClick={() => setMandateBuilderOpen(true)}
+              className={`flex items-center gap-1.5 px-3 py-[6px] rounded-lg text-[12px] font-semibold transition-all ${
+                activeMandate
+                  ? 'bg-indigo-600 text-white hover:bg-indigo-700 shadow-sm shadow-indigo-200'
+                  : 'bg-white border border-[#e2e8f0] text-[#475569] hover:border-indigo-300 hover:text-indigo-600'
+              }`}>
+              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round">
+                <circle cx="11" cy="11" r="8"/><path d="M21 21l-4.35-4.35"/><path d="M11 8v6M8 11h6"/>
+              </svg>
+              {activeMandate ? 'Mandate Active' : 'New Mandate'}
+            </button>
             <button onClick={exportCSV}
               className="flex items-center gap-1.5 px-3 py-[6px] bg-white border border-[#e2e8f0] rounded-lg text-[12px] font-medium text-[#475569] hover:border-[#cbd5e1] hover:shadow-sm transition-all">
               {Icons.download} Export
@@ -711,6 +957,118 @@ export default function Home() {
             </button>
           </div>
         </header>
+
+        {/* ═══════ GLOBAL SEARCH COMMAND PALETTE ═══════ */}
+        {globalSearchOpen && (
+          <>
+            <div className="fixed inset-0 bg-black/40 backdrop-blur-[3px] z-[300]" onClick={() => { setGlobalSearchOpen(false); setGlobalSearch('') }} />
+            <div className="fixed top-[15%] left-1/2 -translate-x-1/2 w-[580px] bg-white rounded-2xl shadow-2xl z-[301] overflow-hidden border border-[#e2e8f0]"
+              style={{ animation: 'slideUp 0.2s ease-out' }}>
+              {/* Search input */}
+              <div className="flex items-center gap-3 px-5 py-4 border-b border-[#e2e8f0]">
+                <span className="text-[#94a3b8]">{Icons.search}</span>
+                <input
+                  ref={globalSearchRef}
+                  type="text"
+                  value={globalSearch}
+                  onChange={e => setGlobalSearch(e.target.value)}
+                  placeholder="Search lawyers, deals, firms, sectors..."
+                  className="flex-1 text-[15px] outline-none placeholder:text-[#cbd5e1] text-[#0f172a]"
+                  autoComplete="off"
+                />
+                <kbd className="text-[10px] bg-[#f8fafc] border border-[#e2e8f0] rounded px-1.5 py-0.5 font-mono text-[#94a3b8]">ESC</kbd>
+              </div>
+
+              {/* Results */}
+              <div className="max-h-[420px] overflow-y-auto">
+                {!globalSearch || globalSearch.length < 2 ? (
+                  <div className="px-5 py-8 text-center">
+                    <div className="text-[13px] text-[#94a3b8]">Type at least 2 characters to search</div>
+                    <div className="text-[11px] text-[#cbd5e1] mt-1">Search across all {lawyers.length.toLocaleString()} lawyers and {deals.length} deals</div>
+                    <div className="flex gap-3 justify-center mt-4 text-[11px] text-[#94a3b8]">
+                      <span className="flex items-center gap-1"><kbd className="bg-[#f8fafc] border border-[#e2e8f0] rounded px-1 py-0.5 font-mono text-[10px]">/</kbd> focus tab search</span>
+                      <span className="flex items-center gap-1"><kbd className="bg-[#f8fafc] border border-[#e2e8f0] rounded px-1 py-0.5 font-mono text-[10px]">↑↓</kbd> navigate</span>
+                      <span className="flex items-center gap-1"><kbd className="bg-[#f8fafc] border border-[#e2e8f0] rounded px-1 py-0.5 font-mono text-[10px]">ESC</kbd> close</span>
+                    </div>
+                  </div>
+                ) : globalSearchResults.lawyers.length === 0 && globalSearchResults.deals.length === 0 ? (
+                  <div className="px-5 py-8 text-center">
+                    <div className="text-[13px] text-[#94a3b8]">No results for &ldquo;{globalSearch}&rdquo;</div>
+                    <div className="text-[11px] text-[#cbd5e1] mt-1">Try a different search term or check spelling</div>
+                  </div>
+                ) : (
+                  <>
+                    {globalSearchResults.lawyers.length > 0 && (
+                      <div>
+                        <div className="px-5 py-2 text-[10px] font-semibold uppercase tracking-wider text-[#94a3b8] bg-[#fafbfc] border-b border-[#f1f5f9] flex items-center justify-between">
+                          <span>Lawyers</span>
+                          <span className="text-indigo-500">{globalSearchResults.lawyers.length}{globalSearchResults.lawyers.length === 8 ? '+' : ''}</span>
+                        </div>
+                        {globalSearchResults.lawyers.map(l => (
+                          <button key={l.id}
+                            onClick={() => { setGlobalSearchOpen(false); setGlobalSearch(''); setSelectedLawyer(l) }}
+                            className="w-full flex items-center gap-3 px-5 py-3 hover:bg-[#f8fafc] transition-colors text-left border-b border-[#f1f5f9] last:border-0">
+                            <div className="flex-shrink-0">{tierBadge(l.tier)}</div>
+                            <div className="flex-1 min-w-0">
+                              <div className="text-[13px] font-semibold text-[#0f172a] truncate">
+                                <HighlightText text={l.name} query={debouncedGlobalSearch} />
+                              </div>
+                              <div className="text-[11px] text-[#94a3b8] truncate">
+                                <HighlightText text={`${getFirmName(l)}${l.sub_sectors?.sectors?.name ? ` · ${l.sub_sectors.sectors.name}` : ''}`} query={debouncedGlobalSearch} />
+                              </div>
+                            </div>
+                            <span className={`text-[12px] font-bold flex-shrink-0 ${scoreColor(l.total_score)}`}>{l.total_score}</span>
+                          </button>
+                        ))}
+                      </div>
+                    )}
+                    {globalSearchResults.deals.length > 0 && (
+                      <div>
+                        <div className="px-5 py-2 text-[10px] font-semibold uppercase tracking-wider text-[#94a3b8] bg-[#fafbfc] border-b border-[#f1f5f9] flex items-center justify-between">
+                          <span>Deals</span>
+                          <span className="text-indigo-500">{globalSearchResults.deals.length}{globalSearchResults.deals.length === 5 ? '+' : ''}</span>
+                        </div>
+                        {globalSearchResults.deals.map(d => (
+                          <button key={d.id}
+                            onClick={() => { setGlobalSearchOpen(false); setGlobalSearch(''); setSelectedDeal(d) }}
+                            className="w-full flex items-center gap-3 px-5 py-3 hover:bg-[#f8fafc] transition-colors text-left border-b border-[#f1f5f9] last:border-0">
+                            <div className="flex-shrink-0">
+                              <span className={`text-[10px] font-bold px-1.5 py-0.5 rounded ${d.confidence === 'High' ? 'bg-emerald-50 text-emerald-600' : 'bg-blue-50 text-blue-600'}`}>
+                                {d.confidence || '—'}
+                              </span>
+                            </div>
+                            <div className="flex-1 min-w-0">
+                              <div className="text-[12px] text-[#0f172a] font-medium truncate">
+                                <HighlightText text={d.description || 'Untitled deal'} query={debouncedGlobalSearch} />
+                              </div>
+                              <div className="text-[11px] text-[#94a3b8] truncate">
+                                <HighlightText text={`${d.firm_name || ''}${d.year ? ` · ${d.year}` : ''}${d.deal_value ? ` · ${d.deal_value}` : ''}`} query={debouncedGlobalSearch} />
+                              </div>
+                            </div>
+                          </button>
+                        ))}
+                      </div>
+                    )}
+                    {/* Quick actions */}
+                    <div className="px-5 py-3 bg-[#fafbfc] border-t border-[#e2e8f0] flex items-center gap-3">
+                      <button
+                        onClick={() => { setGlobalSearchOpen(false); setSearch(globalSearch); setGlobalSearch(''); setTab('lawyers'); setPage(1) }}
+                        className="text-[11px] text-indigo-600 hover:text-indigo-700 font-medium transition-colors">
+                        Search all lawyers for &ldquo;{globalSearch}&rdquo; →
+                      </button>
+                      <span className="text-[#e2e8f0]">|</span>
+                      <button
+                        onClick={() => { setGlobalSearchOpen(false); setDealSearch(globalSearch); setGlobalSearch(''); setTab('deals'); setDealPage(1) }}
+                        className="text-[11px] text-indigo-600 hover:text-indigo-700 font-medium transition-colors">
+                        Search all deals for &ldquo;{globalSearch}&rdquo; →
+                      </button>
+                    </div>
+                  </>
+                )}
+              </div>
+            </div>
+          </>
+        )}
 
         <div className="p-8 max-w-[1320px] mx-auto">
 
@@ -834,6 +1192,17 @@ export default function Home() {
           {/* ═══════════════════ LAWYERS ═══════════════════ */}
           {tab === 'lawyers' && (
             <div>
+              {/* Mandate bar */}
+              {activeMandate && (
+                <MandateBar
+                  mandate={activeMandate}
+                  resultCount={filteredLawyers.length}
+                  strongCount={mandateStats.strong}
+                  goodCount={mandateStats.good}
+                  onEdit={() => setMandateBuilderOpen(true)}
+                  onClear={handleClearMandate}
+                />
+              )}
               {/* Sector pills */}
               <div className="flex gap-1.5 mb-5 overflow-x-auto pb-1">
                 <button onClick={() => { setSectorFilter(''); setSubSectorFilter(''); setPage(1) }}
@@ -862,10 +1231,15 @@ export default function Home() {
               {/* Filters */}
               <div className="flex gap-2 mb-3 flex-wrap items-center">
                 <div className="relative flex-1 min-w-[220px] max-w-[380px]">
-                  <input type="text" value={search} onChange={e => { setSearch(e.target.value); setPage(1) }}
-                    placeholder="Search name, company, focus, jurisdiction..."
-                    className="w-full px-3 py-[7px] pl-9 bg-white border border-[#e2e8f0] rounded-lg text-[13px] outline-none focus:border-[#6366f1] focus:ring-2 focus:ring-[#6366f1]/10 transition-all placeholder:text-[#cbd5e1]" />
+                  <input ref={lawyerSearchRef} type="text" value={search} onChange={e => { setSearch(e.target.value); setPage(1) }}
+                    placeholder="Search name, company, title, sector, focus areas..."
+                    className="w-full px-3 py-[7px] pl-9 pr-8 bg-white border border-[#e2e8f0] rounded-lg text-[13px] outline-none focus:border-[#6366f1] focus:ring-2 focus:ring-[#6366f1]/10 transition-all placeholder:text-[#cbd5e1]" />
                   <span className="absolute left-3 top-1/2 -translate-y-1/2 text-[#94a3b8]">{Icons.search}</span>
+                  {search ? (
+                    <button onClick={() => setSearch('')} className="absolute right-3 top-1/2 -translate-y-1/2 text-[#94a3b8] hover:text-[#475569] text-sm">&times;</button>
+                  ) : (
+                    <kbd className="absolute right-2.5 top-1/2 -translate-y-1/2 text-[10px] bg-[#f8fafc] border border-[#e2e8f0] rounded px-1 py-0.5 font-mono text-[#cbd5e1]">/</kbd>
+                  )}
                 </div>
                 <select value={tierFilter} onChange={e => { setTierFilter(e.target.value); setPage(1) }} className={selectStyle}>
                   <option value="">All Tiers</option><option value="T1">T1</option><option value="T2">T2</option><option value="T3">T3</option>
@@ -928,6 +1302,7 @@ export default function Home() {
                       <th className="py-3 px-2 w-[32px]"></th>
                       {[
                         { key: 'tier', label: 'Tier' },
+                        ...(activeMandate ? [{ key: 'fit_score', label: 'Fit' }] : []),
                         { key: 'total_score', label: 'Score' },
                         { key: 'name', label: 'Name' },
                         { key: 'firms.name', label: 'Company' },
@@ -960,6 +1335,28 @@ export default function Home() {
                             ) : <span className="text-[#e2e8f0]">—</span>}
                           </td>
                           <td className="py-2.5 px-3">{tierBadge(l.tier)}</td>
+                          {activeMandate && (() => {
+                            const fs = fitScores.get(l.id)
+                            if (!fs) return <td className="py-2.5 px-3 text-[#e2e8f0]">—</td>
+                            const fitColor = fs.total >= 75 ? 'text-emerald-600' : fs.total >= 50 ? 'text-blue-600' : fs.total >= 25 ? 'text-amber-600' : 'text-slate-400'
+                            const fitBg = fs.total >= 75 ? 'bg-emerald-50 ring-emerald-200' : fs.total >= 50 ? 'bg-blue-50 ring-blue-200' : fs.total >= 25 ? 'bg-amber-50 ring-amber-200' : 'bg-slate-50 ring-slate-200'
+                            return (
+                              <td className="py-2.5 px-3">
+                                <span className="tooltip-trigger relative cursor-help">
+                                  <span className={`inline-flex items-center justify-center px-2 py-0.5 rounded-md text-[11px] font-bold ring-1 ${fitBg} ${fitColor}`}>
+                                    {fs.total}%
+                                  </span>
+                                  <span className="tooltip-content hidden absolute bottom-full left-1/2 -translate-x-1/2 mb-2 bg-[#0f172a] text-white text-[11px] px-3 py-2.5 rounded-lg whitespace-nowrap z-50 shadow-xl">
+                                    <span className="font-semibold">{fs.tier} Fit</span><br/>
+                                    Sector {fs.sectorMatch}% &middot; Specialism {fs.specialismOverlap}%<br/>
+                                    Jurisdiction {fs.jurisdictionFit}% &middot; Location {fs.locationProximity}%<br/>
+                                    Seniority {fs.seniorityAlignment}% &middot; Firm {fs.firmTypeMatch}%<br/>
+                                    Language {fs.languageCapability}% &middot; Quality {fs.qualityBaseline}%
+                                  </span>
+                                </span>
+                              </td>
+                            )
+                          })()}
                           <td className={`py-2.5 px-3 font-bold ${scoreColor(l.total_score)}`}>
                             <span className="tooltip-trigger relative cursor-help">{l.total_score}
                               <span className="tooltip-content hidden absolute bottom-full left-1/2 -translate-x-1/2 mb-2 bg-[#0f172a] text-white text-[11px] px-3 py-2 rounded-lg whitespace-nowrap z-50 shadow-xl">
@@ -1081,10 +1478,15 @@ export default function Home() {
               {/* Filters */}
               <div className="flex gap-2 mb-4 flex-wrap items-center">
                 <div className="relative flex-1 min-w-[220px] max-w-[380px]">
-                  <input type="text" value={dealSearch} onChange={e => { setDealSearch(e.target.value); setDealPage(1) }}
-                    placeholder="Search deals, firms, clients..."
-                    className="w-full px-3 py-[7px] pl-9 bg-white border border-[#e2e8f0] rounded-lg text-[13px] outline-none focus:border-[#6366f1] focus:ring-2 focus:ring-[#6366f1]/10 transition-all placeholder:text-[#cbd5e1]" />
+                  <input ref={dealSearchRef} type="text" value={dealSearch} onChange={e => { setDealSearch(e.target.value); setDealPage(1) }}
+                    placeholder="Search deals, firms, clients, type, value, year..."
+                    className="w-full px-3 py-[7px] pl-9 pr-8 bg-white border border-[#e2e8f0] rounded-lg text-[13px] outline-none focus:border-[#6366f1] focus:ring-2 focus:ring-[#6366f1]/10 transition-all placeholder:text-[#cbd5e1]" />
                   <span className="absolute left-3 top-1/2 -translate-y-1/2 text-[#94a3b8]">{Icons.search}</span>
+                  {dealSearch ? (
+                    <button onClick={() => setDealSearch('')} className="absolute right-3 top-1/2 -translate-y-1/2 text-[#94a3b8] hover:text-[#475569] text-sm">&times;</button>
+                  ) : (
+                    <kbd className="absolute right-2.5 top-1/2 -translate-y-1/2 text-[10px] bg-[#f8fafc] border border-[#e2e8f0] rounded px-1 py-0.5 font-mono text-[#cbd5e1]">/</kbd>
+                  )}
                 </div>
                 <select value={dealFirmFilter} onChange={e => { setDealFirmFilter(e.target.value); setDealPage(1) }} className={`${selectStyle} max-w-[200px]`}>
                   <option value="">All Firms</option>
@@ -1114,6 +1516,19 @@ export default function Home() {
                     className="px-3 py-[7px] text-[12px] text-red-500 hover:text-red-600 font-medium transition-colors">Clear all</button>
                 )}
               </div>
+
+              {/* Active deal filter pills */}
+              {(dealSearch || dealTypeFilter || dealConfFilter || dealYearFilter || dealFirmFilter || dealAssetFilter || dealSpecialismFilter) && (
+                <div className="flex gap-1.5 flex-wrap mb-3">
+                  {dealSearch && <span className="inline-flex items-center gap-1 px-2.5 py-1 bg-indigo-50 rounded-md text-[11px] text-indigo-600 font-medium">&ldquo;{dealSearch}&rdquo; <button onClick={() => setDealSearch('')} className="ml-1 hover:text-indigo-800">&times;</button></span>}
+                  {dealFirmFilter && <span className="inline-flex items-center gap-1 px-2.5 py-1 bg-indigo-50 rounded-md text-[11px] text-indigo-600 font-medium">{dealFirmFilter} <button onClick={() => setDealFirmFilter('')} className="ml-1">&times;</button></span>}
+                  {dealTypeFilter && <span className="inline-flex items-center gap-1 px-2.5 py-1 bg-indigo-50 rounded-md text-[11px] text-indigo-600 font-medium">{dealTypeFilter} <button onClick={() => setDealTypeFilter('')} className="ml-1">&times;</button></span>}
+                  {dealAssetFilter && <span className="inline-flex items-center gap-1 px-2.5 py-1 bg-indigo-50 rounded-md text-[11px] text-indigo-600 font-medium">{dealAssetFilter} <button onClick={() => setDealAssetFilter('')} className="ml-1">&times;</button></span>}
+                  {dealSpecialismFilter && <span className="inline-flex items-center gap-1 px-2.5 py-1 bg-indigo-50 rounded-md text-[11px] text-indigo-600 font-medium">{dealSpecialismFilter} <button onClick={() => setDealSpecialismFilter('')} className="ml-1">&times;</button></span>}
+                  {dealYearFilter && <span className="inline-flex items-center gap-1 px-2.5 py-1 bg-indigo-50 rounded-md text-[11px] text-indigo-600 font-medium">{dealYearFilter} <button onClick={() => setDealYearFilter('')} className="ml-1">&times;</button></span>}
+                  {dealConfFilter && <span className="inline-flex items-center gap-1 px-2.5 py-1 bg-indigo-50 rounded-md text-[11px] text-indigo-600 font-medium">{dealConfFilter} <button onClick={() => setDealConfFilter('')} className="ml-1">&times;</button></span>}
+                </div>
+              )}
 
               {/* Deal table */}
               <div className="bg-white border border-[#e2e8f0] rounded-xl overflow-hidden shadow-sm">
@@ -1194,6 +1609,258 @@ export default function Home() {
                   )}
                 </div>
               </div>
+            </div>
+          )}
+
+          {/* ═══════════════════ FIRMS ═══════════════════ */}
+          {tab === 'firms' && (
+            <div>
+              {/* KPI Cards */}
+              <div className="grid grid-cols-2 md:grid-cols-5 gap-4 mb-6">
+                {[
+                  { label: 'Total Firms', value: firmProfiles.length },
+                  { label: 'Avg Lawyers / Firm', value: firmProfiles.length > 0 ? Math.round(firmProfiles.reduce((s, f) => s + f.lawyerCount, 0) / firmProfiles.length) : 0 },
+                  { label: 'Avg Deals / Firm', value: firmProfiles.length > 0 ? Math.round(firmProfiles.reduce((s, f) => s + f.dealCount, 0) / firmProfiles.length) : 0 },
+                  { label: 'Top-Tier Firms', value: firmProfiles.filter(f => f.qualityTier === 1).length, color: 'text-emerald-600' },
+                  { label: 'Firm Types', value: firmTypes.length },
+                ].map(kpi => (
+                  <div key={kpi.label} className="bg-white border border-[#e2e8f0] rounded-xl p-4 shadow-sm">
+                    <div className={`text-xl font-bold ${kpi.color || 'text-[#0f172a]'}`}>{typeof kpi.value === 'number' ? kpi.value.toLocaleString() : kpi.value}</div>
+                    <div className="text-[11px] text-[#94a3b8] mt-0.5 font-medium">{kpi.label}</div>
+                  </div>
+                ))}
+              </div>
+
+              {/* Compare bar */}
+              {compareList.length > 0 && (
+                <div className="bg-indigo-50 border border-indigo-200 rounded-xl p-4 mb-6 flex items-center gap-3">
+                  <span className="text-[12px] font-semibold text-indigo-700">Comparing {compareList.length}/3:</span>
+                  <div className="flex gap-2 flex-1">
+                    {compareList.map(f => (
+                      <span key={f.id} className="inline-flex items-center gap-1 px-2.5 py-1 bg-white rounded-lg text-[12px] font-medium text-[#0f172a] border border-indigo-200">
+                        {f.name}
+                        <button onClick={() => toggleCompare(f)} className="text-indigo-400 hover:text-indigo-600 ml-0.5">&times;</button>
+                      </span>
+                    ))}
+                  </div>
+                  <button onClick={() => setCompareList([])} className="text-[11px] text-indigo-500 hover:text-indigo-700 font-medium">Clear</button>
+                </div>
+              )}
+
+              {/* Filters */}
+              <div className="bg-white border border-[#e2e8f0] rounded-xl shadow-sm mb-6">
+                <div className="p-4 flex items-center gap-3 flex-wrap">
+                  <div className="relative flex-1 min-w-[200px]">
+                    <span className="absolute left-3 top-1/2 -translate-y-1/2 text-[#94a3b8]">{Icons.search}</span>
+                    <input type="text" value={firmSearch} onChange={e => { setFirmSearch(e.target.value); setFirmPage(1) }}
+                      placeholder="Search firms by name, type, or sector..."
+                      className="w-full pl-9 pr-3 py-[7px] bg-[#f8fafc] border border-[#e2e8f0] rounded-lg text-[13px] outline-none focus:border-[#6366f1] focus:ring-1 focus:ring-[#6366f1]/20 transition-all placeholder:text-[#cbd5e1]" />
+                  </div>
+                  <select value={firmTypeFilter} onChange={e => { setFirmTypeFilter(e.target.value); setFirmPage(1) }} className={selectStyle}>
+                    <option value="">All Types</option>
+                    {firmTypes.map(t => <option key={t} value={t}>{t}</option>)}
+                  </select>
+                  <select value={firmTierFilter} onChange={e => { setFirmTierFilter(e.target.value); setFirmPage(1) }} className={selectStyle}>
+                    <option value="">All Tiers</option>
+                    <option value="1">Tier 1</option>
+                    <option value="2">Tier 2</option>
+                    <option value="3">Tier 3</option>
+                  </select>
+                  {(firmSearch || firmTypeFilter || firmTierFilter) && (
+                    <button onClick={() => { setFirmSearch(''); setFirmTypeFilter(''); setFirmTierFilter(''); setFirmPage(1) }}
+                      className="text-[12px] text-red-500 hover:text-red-600 font-medium">Clear all</button>
+                  )}
+                </div>
+
+                {/* Table */}
+                <div className="overflow-x-auto">
+                  <table className="w-full">
+                    <thead>
+                      <tr className="border-t border-[#e2e8f0]">
+                        <th className="w-10 px-4 py-3" />
+                        {[
+                          { key: 'name', label: 'Firm Name', align: 'left' },
+                          { key: 'type', label: 'Type', align: 'left' },
+                          { key: 'qualityTier', label: 'Quality Tier', align: 'center' },
+                          { key: 'healthScore', label: 'Health', align: 'center' },
+                          { key: 'lawyerCount', label: 'Lawyers', align: 'center' },
+                          { key: 'dealCount', label: 'Deals', align: 'center' },
+                          { key: 'avgScore', label: 'Avg Score', align: 'center' },
+                          { key: 'sectorCoverage', label: 'Sectors', align: 'center' },
+                        ].map(col => (
+                          <th key={col.key}
+                            onClick={() => handleFirmSort(col.key)}
+                            className={`px-4 py-3 text-[11px] font-semibold text-[#94a3b8] uppercase tracking-wider cursor-pointer hover:text-[#0f172a] transition-colors whitespace-nowrap ${col.align === 'center' ? 'text-center' : 'text-left'}`}>
+                            <span className="inline-flex items-center gap-1">
+                              {col.label}
+                              {firmSortField === col.key && (
+                                <span className="text-indigo-500">{firmSortDir === -1 ? '↓' : '↑'}</span>
+                              )}
+                            </span>
+                          </th>
+                        ))}
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {pagedFirms.map(firm => {
+                        const fTier = tierLabel(firm.qualityTier)
+                        const fHealth = healthLabel(firm.healthScore)
+                        const isComparing = compareList.some(c => c.id === firm.id)
+                        return (
+                          <tr key={firm.id}
+                            onClick={() => setSelectedFirm(firm)}
+                            className="border-t border-[#f1f5f9] hover:bg-[#fafbfc] cursor-pointer transition-colors group">
+                            <td className="px-4 py-3">
+                              <button
+                                onClick={(e) => { e.stopPropagation(); toggleCompare(firm) }}
+                                className={`w-5 h-5 rounded border-2 flex items-center justify-center text-[10px] transition-all ${
+                                  isComparing
+                                    ? 'bg-indigo-600 border-indigo-600 text-white'
+                                    : 'border-[#e2e8f0] hover:border-indigo-400 text-transparent hover:text-indigo-300'
+                                }`}>
+                                ✓
+                              </button>
+                            </td>
+                            <td className="px-4 py-3">
+                              <div className="text-[13px] font-semibold text-[#0f172a] group-hover:text-indigo-600 transition-colors">{firm.name}</div>
+                              {firm.topSectors.length > 0 && (
+                                <div className="flex gap-1 mt-1">
+                                  {firm.topSectors.slice(0, 2).map(s => {
+                                    const sc = SECTOR_COLORS[s.name] || { bg: 'bg-gray-50', text: 'text-gray-600' }
+                                    return <span key={s.name} className={`px-1.5 py-0.5 rounded text-[9px] font-medium ${sc.bg} ${sc.text}`}>{s.name}</span>
+                                  })}
+                                </div>
+                              )}
+                            </td>
+                            <td className="px-4 py-3 text-[12px] text-[#475569]">{firm.type || '—'}</td>
+                            <td className="px-4 py-3 text-center">
+                              <span className={`inline-flex items-center px-2 py-0.5 rounded-md text-[11px] font-bold ${fTier.bg} ${fTier.textColor}`}>{fTier.text}</span>
+                            </td>
+                            <td className="px-4 py-3 text-center">
+                              <span className={`text-[12px] font-semibold ${fHealth.color}`}>{fHealth.text}</span>
+                            </td>
+                            <td className="px-4 py-3 text-center text-[13px] font-bold text-[#0f172a]">{firm.lawyerCount}</td>
+                            <td className="px-4 py-3 text-center text-[13px] font-medium text-[#475569]">{firm.dealCount}</td>
+                            <td className="px-4 py-3 text-center">
+                              <span className={`text-[13px] font-bold ${firm.avgScore >= 15 ? 'text-emerald-600' : firm.avgScore >= 10 ? 'text-blue-600' : 'text-amber-600'}`}>{firm.avgScore}</span>
+                            </td>
+                            <td className="px-4 py-3 text-center text-[13px] text-[#475569]">{firm.sectorCoverage}</td>
+                          </tr>
+                        )
+                      })}
+                    </tbody>
+                  </table>
+                </div>
+
+                {/* Pagination */}
+                {totalFirmPages > 1 && (
+                  <div className="flex items-center justify-between px-4 py-3 border-t border-[#e2e8f0]">
+                    <span className="text-[12px] text-[#94a3b8]">
+                      Showing {((firmPage - 1) * firmPerPage) + 1}–{Math.min(firmPage * firmPerPage, filteredFirms.length)} of {filteredFirms.length}
+                    </span>
+                    <div className="flex gap-1">
+                      <button onClick={() => setFirmPage(p => Math.max(1, p - 1))} disabled={firmPage === 1}
+                        className="px-3 py-1.5 rounded-lg text-[12px] font-medium bg-white border border-[#e2e8f0] text-[#475569] hover:border-[#cbd5e1] disabled:opacity-40 disabled:cursor-not-allowed transition-all">
+                        Prev
+                      </button>
+                      <span className="px-3 py-1.5 text-[12px] text-[#94a3b8]">{firmPage} / {totalFirmPages}</span>
+                      <button onClick={() => setFirmPage(p => Math.min(totalFirmPages, p + 1))} disabled={firmPage === totalFirmPages}
+                        className="px-3 py-1.5 rounded-lg text-[12px] font-medium bg-white border border-[#e2e8f0] text-[#475569] hover:border-[#cbd5e1] disabled:opacity-40 disabled:cursor-not-allowed transition-all">
+                        Next
+                      </button>
+                    </div>
+                  </div>
+                )}
+              </div>
+
+              {/* Comparison panel (inline, below table) */}
+              {compareList.length >= 2 && (
+                <div className="bg-white border border-[#e2e8f0] rounded-xl shadow-sm p-6 mb-6">
+                  <h3 className="text-[14px] font-bold text-[#0f172a] mb-5">Firm Comparison</h3>
+                  <div className="overflow-x-auto">
+                    <table className="w-full">
+                      <thead>
+                        <tr className="border-b border-[#e2e8f0]">
+                          <th className="text-left py-2 px-3 text-[11px] font-semibold text-[#94a3b8] uppercase tracking-wider w-[140px]">Metric</th>
+                          {compareList.map(f => (
+                            <th key={f.id} className="text-center py-2 px-3 text-[12px] font-semibold text-[#0f172a]">{f.name}</th>
+                          ))}
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {[
+                          { label: 'Quality Tier', render: (f: FirmProfile) => { const t = tierLabel(f.qualityTier); return <span className={`px-2 py-0.5 rounded-md text-[11px] font-bold ${t.bg} ${t.textColor}`}>{t.text}</span> }},
+                          { label: 'Health Score', render: (f: FirmProfile) => { const h = healthLabel(f.healthScore); return <span className={`font-semibold text-[13px] ${h.color}`}>{h.text}</span> }},
+                          { label: 'Lawyers', render: (f: FirmProfile) => <span className="font-bold text-[13px]">{f.lawyerCount}</span> },
+                          { label: 'Deals', render: (f: FirmProfile) => <span className="font-bold text-[13px]">{f.dealCount}</span> },
+                          { label: 'T1 Lawyers', render: (f: FirmProfile) => <span className="font-bold text-emerald-600 text-[13px]">{f.t1Count}</span> },
+                          { label: 'T2 Lawyers', render: (f: FirmProfile) => <span className="font-bold text-blue-600 text-[13px]">{f.t2Count}</span> },
+                          { label: 'T3 Lawyers', render: (f: FirmProfile) => <span className="font-bold text-amber-600 text-[13px]">{f.t3Count}</span> },
+                          { label: 'Avg Score', render: (f: FirmProfile) => <span className={`font-bold text-[13px] ${f.avgScore >= 15 ? 'text-emerald-600' : f.avgScore >= 10 ? 'text-blue-600' : 'text-amber-600'}`}>{f.avgScore}</span> },
+                          { label: 'Sector Coverage', render: (f: FirmProfile) => <span className="text-[13px]">{f.sectorCoverage}</span> },
+                          { label: 'Top Sectors', render: (f: FirmProfile) => (
+                            <div className="flex flex-wrap gap-1 justify-center">
+                              {f.topSectors.slice(0, 3).map(s => {
+                                const sc = SECTOR_COLORS[s.name] || { bg: 'bg-gray-50', text: 'text-gray-600' }
+                                return <span key={s.name} className={`px-1.5 py-0.5 rounded text-[9px] font-medium ${sc.bg} ${sc.text}`}>{s.name}</span>
+                              })}
+                            </div>
+                          )},
+                        ].map(row => (
+                          <tr key={row.label} className="border-b border-[#f1f5f9] last:border-0">
+                            <td className="py-3 px-3 text-[12px] text-[#94a3b8] font-medium">{row.label}</td>
+                            {compareList.map(f => (
+                              <td key={f.id} className="py-3 px-3 text-center">{row.render(f)}</td>
+                            ))}
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  </div>
+
+                  {/* Deal activity comparison (bar chart) */}
+                  <div className="mt-6">
+                    <h4 className="text-[12px] font-semibold text-[#475569] mb-3">Deal Activity by Year</h4>
+                    {(() => {
+                      const allYears = new Set<number>()
+                      compareList.forEach(f => f.dealsByYear.forEach(d => allYears.add(d.year)))
+                      const years = Array.from(allYears).sort()
+                      if (years.length === 0) return <p className="text-[12px] text-[#94a3b8]">No deal data available</p>
+                      const maxCount = Math.max(...compareList.flatMap(f => f.dealsByYear.map(d => d.count)), 1)
+                      const barColors = ['bg-indigo-500', 'bg-emerald-500', 'bg-amber-500']
+                      return (
+                        <div className="space-y-2">
+                          {years.map(year => (
+                            <div key={year} className="flex items-center gap-3">
+                              <span className="text-[11px] text-[#94a3b8] w-10 text-right font-medium">{year}</span>
+                              <div className="flex-1 flex gap-1">
+                                {compareList.map((f, i) => {
+                                  const count = f.dealsByYear.find(d => d.year === year)?.count || 0
+                                  return (
+                                    <div key={f.id} className="flex-1">
+                                      <div className={`h-5 rounded ${barColors[i]} transition-all`}
+                                        style={{ width: `${(count / maxCount) * 100}%`, minWidth: count > 0 ? '4px' : '0' }}
+                                        title={`${f.name}: ${count} deals`} />
+                                    </div>
+                                  )
+                                })}
+                              </div>
+                            </div>
+                          ))}
+                          <div className="flex gap-4 mt-2">
+                            {compareList.map((f, i) => (
+                              <div key={f.id} className="flex items-center gap-1.5 text-[10px] text-[#475569]">
+                                <div className={`w-2.5 h-2.5 rounded-sm ${barColors[i]}`} />
+                                {f.name}
+                              </div>
+                            ))}
+                          </div>
+                        </div>
+                      )
+                    })()}
+                  </div>
+                </div>
+              )}
             </div>
           )}
 
@@ -1368,6 +2035,64 @@ export default function Home() {
                 </div>
               </div>
 
+              {/* Fit Score (when mandate active) */}
+              {activeMandate && (() => {
+                const fs = fitScores.get(selectedLawyer.id)
+                if (!fs) return null
+                const fitColor = fs.total >= 75 ? '#10b981' : fs.total >= 50 ? '#3b82f6' : fs.total >= 25 ? '#f59e0b' : '#94a3b8'
+                const fitLabel = fs.tier
+                return (
+                  <div className="bg-gradient-to-br from-indigo-50/50 to-violet-50/50 rounded-xl p-5 border border-indigo-100">
+                    <div className="flex items-center justify-between mb-3">
+                      <h3 className="text-[11px] font-semibold uppercase tracking-wider text-indigo-400">Mandate Fit</h3>
+                      <span className={`text-[10px] font-bold px-2 py-0.5 rounded-md ${
+                        fs.tier === 'Strong' ? 'bg-emerald-100 text-emerald-700' :
+                        fs.tier === 'Good' ? 'bg-blue-100 text-blue-700' :
+                        fs.tier === 'Partial' ? 'bg-amber-100 text-amber-700' :
+                        'bg-slate-100 text-slate-500'
+                      }`}>{fitLabel} Fit</span>
+                    </div>
+                    <div className="flex items-center gap-4 mb-4">
+                      <div className="relative">
+                        <ScoreRing score={fs.total} max={100} size={64} overrideColor={fitColor} />
+                        <div className="absolute inset-0 flex items-center justify-center">
+                          <span className="text-[15px] font-bold" style={{ color: fitColor }}>{fs.total}</span>
+                        </div>
+                      </div>
+                      <div className="text-[12px] text-[#475569]">
+                        <div className="font-semibold text-[#0f172a]">{activeMandate.title}</div>
+                        <div className="text-[11px] text-[#94a3b8] mt-0.5">
+                          {[activeMandate.seniority, activeMandate.sector, activeMandate.location].filter(Boolean).join(' · ')}
+                        </div>
+                      </div>
+                    </div>
+                    <div className="space-y-2">
+                      {[
+                        { label: 'Sector Match', value: fs.sectorMatch, weight: '25%' },
+                        { label: 'Specialism', value: fs.specialismOverlap, weight: '20%' },
+                        { label: 'Jurisdiction', value: fs.jurisdictionFit, weight: '15%' },
+                        { label: 'Location', value: fs.locationProximity, weight: '10%' },
+                        { label: 'Seniority', value: fs.seniorityAlignment, weight: '10%' },
+                        { label: 'Firm Type', value: fs.firmTypeMatch, weight: '5%' },
+                        { label: 'Languages', value: fs.languageCapability, weight: '5%' },
+                        { label: 'Quality', value: fs.qualityBaseline, weight: '10%' },
+                      ].map(dim => (
+                        <div key={dim.label} className="flex items-center gap-2">
+                          <span className="w-[85px] text-[11px] text-[#94a3b8]">{dim.label}</span>
+                          <div className="flex-1 h-1.5 bg-white rounded-full overflow-hidden">
+                            <div className={`h-full rounded-full transition-all duration-500 ${
+                              dim.value >= 75 ? 'bg-emerald-500' : dim.value >= 50 ? 'bg-blue-500' : dim.value >= 25 ? 'bg-amber-500' : 'bg-slate-300'
+                            }`} style={{ width: `${dim.value}%` }} />
+                          </div>
+                          <span className="w-[32px] text-right text-[10px] font-bold text-[#475569]">{dim.value}%</span>
+                          <span className="w-[24px] text-right text-[9px] text-[#cbd5e1]">{dim.weight}</span>
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                )
+              })()}
+
               {/* Profile */}
               <div>
                 <h3 className="text-[11px] font-semibold uppercase tracking-wider text-[#94a3b8] mb-3">Profile</h3>
@@ -1488,6 +2213,21 @@ export default function Home() {
           </div>
         </>
       )}
+
+      {/* ═══════════════════ MANDATE BUILDER ═══════════════════ */}
+      <MandateBuilder
+        open={mandateBuilderOpen}
+        onClose={() => setMandateBuilderOpen(false)}
+        onActivate={handleActivateMandate}
+        sectors={sectors}
+        subSectors={allSubSectors}
+        locations={locations}
+        languages={languages}
+        qualJurisdictions={qualJurisdictions}
+        specialisms={allSpecialisms}
+        companyTypes={companyTypes}
+        existingMandate={activeMandate}
+      />
 
       {/* ═══════════════════ DEAL DRAWER ═══════════════════ */}
       {selectedDeal && (
@@ -1618,6 +2358,18 @@ export default function Home() {
             </div>
           </div>
         </>
+      )}
+
+      {/* ═══════════════════ FIRM DRAWER ═══════════════════ */}
+      {selectedFirm && (
+        <FirmDrawer
+          firm={selectedFirm}
+          onClose={() => setSelectedFirm(null)}
+          onSelectLawyer={(l) => { setSelectedFirm(null); setTimeout(() => setSelectedLawyer(l), 150) }}
+          onSelectDeal={(d) => { setSelectedFirm(null); setTimeout(() => setSelectedDeal(d), 150) }}
+          onCompare={toggleCompare}
+          peerFirms={firmsByType.get(selectedFirm.type || 'Unknown') || []}
+        />
       )}
     </div>
   )
