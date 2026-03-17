@@ -6,6 +6,7 @@ import { Mandate, FitScoreBreakdown, computeAllFitScores, loadActiveMandate, sav
 import MandateBuilder from '@/components/MandateBuilder'
 import MandateBar from '@/components/MandateBar'
 import FirmDrawer from '@/components/FirmDrawer'
+import CandidateComparison from '@/components/CandidateComparison'
 import { buildFirmProfiles, FirmProfile, healthLabel, tierLabel, rankFirmsByType } from '@/lib/firmAnalytics'
 import { buildSupplyDemandMatrix, computeTalentDensity, generateMarketInsights, gapSignalStyle, insightTypeStyle, severityStyle } from '@/lib/marketAnalytics'
 
@@ -239,6 +240,10 @@ export default function Home() {
   // Mandate state
   const [activeMandate, setActiveMandate] = useState<Mandate | null>(null)
   const [mandateBuilderOpen, setMandateBuilderOpen] = useState(false)
+
+  // Candidate comparison state
+  const [compareLawyers, setCompareLawyers] = useState<Lawyer[]>([])
+  const [comparisonOpen, setComparisonOpen] = useState(false)
 
   // Firm Intelligence state
   const [selectedFirm, setSelectedFirm] = useState<FirmProfile | null>(null)
@@ -703,6 +708,23 @@ export default function Home() {
     saveActiveMandate(null)
     if (sortField === 'fit_score') { setSortField('total_score'); setSortDir(-1) }
   }, [sortField])
+
+  const toggleCompareLawyer = useCallback((l: Lawyer, e?: React.MouseEvent) => {
+    if (e) e.stopPropagation()
+    setCompareLawyers(prev => {
+      if (prev.some(c => c.id === l.id)) return prev.filter(c => c.id !== l.id)
+      if (prev.length >= 4) return prev // max 4
+      return [...prev, l]
+    })
+  }, [])
+
+  const removeCompareLawyer = useCallback((id: string) => {
+    setCompareLawyers(prev => {
+      const next = prev.filter(c => c.id !== id)
+      if (next.length < 2) setComparisonOpen(false)
+      return next
+    })
+  }, [])
 
   // Mandate fit stats (computed from filtered lawyers for consistency with resultCount)
   const mandateStats = useMemo(() => {
@@ -1326,6 +1348,7 @@ export default function Home() {
                 <div className="overflow-x-auto">
                   <table className="w-full text-[13px]">
                     <thead className="sticky-thead"><tr className="border-b border-[#e2e8f0] bg-[#fafbfc]">
+                      <th className="py-3 px-1 w-[28px]"></th>
                       <th className="py-3 px-2 w-[32px]"></th>
                       <th className="py-3 px-2 w-[32px]"></th>
                       {[
@@ -1352,6 +1375,14 @@ export default function Home() {
                     <tbody>
                       {pagedLawyers.map(l => (
                         <tr key={l.id} className="table-row border-b border-[#f1f5f9] cursor-pointer" onClick={() => setSelectedLawyer(l)}>
+                          <td className="py-2.5 px-1 text-center">
+                            <button onClick={(e) => toggleCompareLawyer(l, e)}
+                              className={`w-[18px] h-[18px] rounded border-[1.5px] flex items-center justify-center text-[9px] transition-all ${
+                                compareLawyers.some(c => c.id === l.id)
+                                  ? 'bg-indigo-600 border-indigo-600 text-white'
+                                  : 'border-[#e2e8f0] hover:border-indigo-400 text-transparent hover:text-indigo-300'
+                              }`}>✓</button>
+                          </td>
                           <td className="py-2.5 px-2 text-center">
                             <button onClick={(e) => toggleStar(l.id, e)} className={`text-sm transition-all ${starred.has(l.id) ? 'text-amber-400 scale-110' : 'text-[#e2e8f0] hover:text-amber-300'}`}>&#9733;</button>
                           </td>
@@ -1460,6 +1491,33 @@ export default function Home() {
                   )}
                 </div>
               </div>
+
+              {/* Floating comparison bar */}
+              {compareLawyers.length > 0 && (
+                <div className="fixed bottom-6 left-1/2 -translate-x-1/2 z-[100] bg-[#0f172a] text-white rounded-xl shadow-2xl px-5 py-3 flex items-center gap-3 border border-white/10"
+                  style={{ animation: 'slideUp 0.2s ease-out' }}>
+                  <span className="text-[12px] font-medium text-slate-300">Compare</span>
+                  <div className="flex gap-2">
+                    {compareLawyers.map((l, i) => {
+                      const color = ['bg-indigo-500', 'bg-emerald-500', 'bg-amber-500', 'bg-pink-500'][i]
+                      return (
+                        <div key={l.id} className="flex items-center gap-1.5 px-2.5 py-1 bg-white/10 rounded-lg">
+                          <div className={`w-2 h-2 rounded-full ${color}`} />
+                          <span className="text-[11px] font-medium max-w-[100px] truncate">{l.name}</span>
+                          <button onClick={() => removeCompareLawyer(l.id)} className="text-slate-400 hover:text-white ml-0.5 text-sm">&times;</button>
+                        </div>
+                      )
+                    })}
+                  </div>
+                  <button
+                    onClick={() => { if (compareLawyers.length >= 2) setComparisonOpen(true) }}
+                    disabled={compareLawyers.length < 2}
+                    className="ml-2 px-4 py-1.5 bg-indigo-500 hover:bg-indigo-400 disabled:bg-slate-600 disabled:text-slate-400 rounded-lg text-[12px] font-bold transition-all">
+                    Compare {compareLawyers.length}/4
+                  </button>
+                  <button onClick={() => setCompareLawyers([])} className="text-slate-400 hover:text-white text-[11px] ml-1">Clear</button>
+                </div>
+              )}
             </div>
           )}
 
@@ -2672,6 +2730,18 @@ export default function Home() {
           onSelectDeal={(d) => { setSelectedFirm(null); setTimeout(() => setSelectedDeal(d), 150) }}
           onCompare={toggleCompare}
           peerFirms={firmsByType.get(selectedFirm.type || 'Unknown') || []}
+        />
+      )}
+
+      {/* ═══════════════════ CANDIDATE COMPARISON ═══════════════════ */}
+      {comparisonOpen && compareLawyers.length >= 2 && (
+        <CandidateComparison
+          candidates={compareLawyers}
+          onClose={() => setComparisonOpen(false)}
+          onRemove={removeCompareLawyer}
+          onSelectLawyer={(l) => { setComparisonOpen(false); setTimeout(() => setSelectedLawyer(l), 150) }}
+          fitScores={fitScores}
+          firmDealsMap={firmDealsMap}
         />
       )}
     </div>
